@@ -1,14 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 // 👉 mock API for the demo UI; later switch to ./api.real
-import {
-  getMeta,
-  getTasks,
-  createTask,
-  updateTask,
-  deleteTask,
-  getContacts
-} from './api.mock';
+
+import { getMeta, getTasks, createTask, updateTask, deleteTask } from "./api.real";
+import { getContacts } from "./api.mock"; // keep only for contact labels if you haven't added /api/contacts
+
 
 import ContactMultiSelect from './components/ContactMultiSelect';
 

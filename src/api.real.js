@@ -1,5 +1,5 @@
-const BASE = import.meta?.env?.VITE_API_BASE || ''; // in StackBlitz you can hardcode your API base if needed
-
+// const BASE = import.meta?.env?.VITE_API_BASE || ''; // in StackBlitz you can hardcode your API base if needed
+const BASE = import.meta.env.VITE_API_BASE || "https://smartsheet-intake-sla-demo.onrender.com";
 async function http(path, init) {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
