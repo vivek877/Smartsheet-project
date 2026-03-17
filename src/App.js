@@ -125,14 +125,14 @@ function AddModal({ phases, contacts, onClose, onCreate }) {
           <Field label="Start Date" style={{ flex: 1 }}>
             <input
               type="date"
-              value={form.start}
+              value={(form.start || '').slice(0,10)}
               onChange={(e) => setForm({ ...form, start: e.target.value })}
             />
           </Field>
           <Field label="End Date" style={{ flex: 1 }}>
             <input
               type="date"
-              value={form.end}
+              value={(form.end || '').slice(0,10)}
               onChange={(e) => setForm({ ...form, end: e.target.value })}
             />
           </Field>
@@ -277,8 +277,8 @@ export default function App() {
       assignedTo: Array.isArray(cellValue(row, 'Assigned To')) ? cellValue(row, 'Assigned To') : (
         cellValue(row, 'Assigned To') ? [cellValue(row, 'Assigned To')] : []
       ),
-      start: (cellValue(row, 'Start Date') || ''),
-      end: (cellValue(row, 'End Date') || ''),
+      start: (cellValue(row, 'Start Date') || '').slice(0,10),
+      end: (cellValue(row, 'End Date') || '').slice(0,10),
       percent: Number(cellValue(row, '% Complete') || 0)
     });
   }
@@ -321,7 +321,7 @@ export default function App() {
         'Start Date': form.start || '',
         'End Date': form.end || '',
         '% Complete': Number(form.percent || 0),
-        'Status': 'In Queue'
+        // 'Status': 'In Queue'
       }
     });
     setShowAdd(false);
