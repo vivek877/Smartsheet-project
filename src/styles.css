@@ -364,3 +364,59 @@ select {
   border-radius: 999px;
   padding: 4px 8px;
 }
+/* ===== Read-only checkbox (visual chip, not an input) ===== */
+.ro-checkbox {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  vertical-align: middle;
+  position: relative;
+}
+.ro-checkbox.checked {
+  background: #2563eb;            /* blue fill when true */
+  border-color: #2563eb;
+}
+.ro-checkbox.checked::after {
+  content: '✓';
+  position: absolute;
+  top: -2px;
+  left: 2px;
+  color: #fff;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* ===== Editable checkbox styling (only in Edit mode for non MR/ATT) ===== */
+.edit-checkbox-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.edit-checkbox-wrapper input[type="checkbox"] {
+  /* keep the native input visible for accessibility but you can style the faux box */
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  position: relative;
+  cursor: pointer;
+}
+.edit-checkbox-wrapper input[type="checkbox"]:checked {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+.edit-checkbox-wrapper input[type="checkbox"]:checked::after {
+  content: '✓';
+  position: absolute;
+  top: -2px;
+  left: 2px;
+  color: #fff;
+  font-size: 12px;
+  line-height: 16px;
+}

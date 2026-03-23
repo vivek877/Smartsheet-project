@@ -1002,23 +1002,57 @@ const displayRows = useMemo(() => {
           }
 
           // CHECKBOX columns: editable only in edit mode
-          if (col.type === 'CHECKBOX') {
-            const checked = !!cell.value;
-            return (
-              <td key={String(col.id)}>
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  disabled={!isEditing}
-                  onChange={(e) => {
-                    if (!isEditing) return;
-                    onQuickUpdate(row.id, col.title, e.target.checked);
-                  }}
-                />
-                {!isEditing && <span className="cell-muted" style={{ marginLeft: 6 }}>read‑only</span>}
-              </td>
-            );
-          }
+         {/* ✅ CHECKBOX columns: render true read‑only visuals in view mode.
+    MR/ATT are always read‑only (even in edit mode).
+    Other checkbox columns become interactive ONLY when isEditing is true. */}
+if (col.type === 'CHECKBOX') {
+  const checked = !!cell.value;
+  const isMRorATT = (col.title === 'MR' || col.title === 'ATT');
+
+  // 🔸 View mode (not editing this row): always show visual checkbox (no disabled inputs)
+  if (!isEditing) {
+    return (
+      <td key={String(col.id)}>
+        <span
+          className={`ro-checkbox ${checked ? 'checked' : ''}`}
+          role="img"
+          aria-label={checked ? 'Checked' : 'Unchecked'}
+          title={checked ? 'Yes' : 'No'}
+        />
+      </td>
+    );
+  }
+
+  // 🔸 Edit mode:
+  //   - MR/ATT still read-only visual
+  //   - other checkbox columns become real inputs (editable)
+  if (isMRorATT) {
+    return (
+      <td key={String(col.id)}>
+        <span
+          className={`ro-checkbox ${checked ? 'checked' : ''}`}
+          role="img"
+          aria-label={checked ? 'Checked' : 'Unchecked'}
+          title="read‑only"
+        />
+      </td>
+    );
+  }
+
+  // Editable checkbox (only when editing the row and not MR/ATT)
+  return (
+    <td key={String(col.id)}>
+      <label className="edit-checkbox-wrapper">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onQuickUpdate(row.id, col.title, e.target.checked)}
+        />
+        <span className="edit-checkbox-faux" />
+      </label>
+    </td>
+  );
+}
 
           // % Complete (avoid NaN; show 0..100)
           if (col.title === '% Complete') {
