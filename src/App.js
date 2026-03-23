@@ -271,90 +271,242 @@ function Field({ label, children, style }) {
 }
 
 // ======================= Add Task Modal =======================
-function AddModal({ phases, contacts, onClose, onCreate }) {
+function AddModal({ nodes = [], contacts, onClose, onCreate }) {
   const [form, setForm] = useState({
-    taskName: '',
-    phaseRowId: '',
+    taskName: "",
+    parentRowId: "",
     assignedTo: [],
-    start: '',
-    end: '',
-    percent: 0
+    start: "",
+    end: "",
+    percent: ""
   });
 
+  const [touched, setTouched] = useState({});
+  const [errors, setErrors] = useState({});
+
+  // ✅ Task name: letters, spaces, punctuation allowed — NO NUMBERS
+  const nameRegex = /^[A-Za-z][A-Za-z\s\-\&\(\)\.'\/,]*$/;
+
+  const isISODate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+
+  // ✅ Master Validator
+  const validate = (draft = form) => {
+    const e = {};
+
+    // Primary
+    if (!draft.taskName.trim()) e.taskName = "Task name is required.";
+    else if (!nameRegex.test(draft.taskName.trim()))
+      e.taskName = "Only letters/spaces allowed (no numbers).";
+
+    // Parent
+    if (!draft.parentRowId) e.parentRowId = "Select a parent row.";
+
+    // Assigned To
+    if (!draft.assignedTo.length)
+      e.assignedTo = "Select at least one assignee.";
+
+    // Dates
+    if (!isISODate(draft.start))
+      e.start = "Start date required (YYYY-MM-DD).";
+
+    if (!isISODate(draft.end))
+      e.end = "End date required (YYYY-MM-DD).";
+
+    if (isISODate(draft.start) && isISODate(draft.end)) {
+      if (draft.end < draft.start)
+        e.end = "End date cannot be earlier than Start date.";
+    }
+
+    // % Complete
+    const pct = String(draft.percent).trim();
+    if (pct === "") e.percent = "% Complete is required.";
+    else {
+      const n = Number(pct);
+      if (!Number.isFinite(n) || n < 0 || n > 100)
+        e.percent = "Enter a number from 0 to 100.";
+    }
+
+    return e;
+  };
+
+  // Revalidate on change
+  useEffect(() => {
+    setErrors(validate(form));
+  }, [form]);
+
+  const invalid = Object.keys(errors).length > 0;
+
+  const update = (patch) => setForm((p) => ({ ...p, ...patch }));
+  const markTouched = (key) =>
+    setTouched((t) => ({ ...t, [key]: true }));
+
+  // ✅ Parent dropdown options (with hierarchy indentation)
+  const ParentOption = ({ opt }) => (
+    <option value={opt.id}>
+      {`${"  ".repeat(opt.depth)}${opt.depth ? "↳ " : ""}${opt.label}`}
+    </option>
+  );
+
   return (
-    <div className="modal-backdrop" onClick={onClose} style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.25)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999
-    }}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{
-        width: 520, maxWidth: '92vw',
-        background: 'var(--panel)', border: '1px solid var(--border)',
-        borderRadius: 12, padding: 16, boxShadow: 'var(--shadow)'
-      }}>
+    <div
+      className="modal-backdrop"
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.25)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 999
+      }}
+    >
+      <div
+        className="modal"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 560,
+          maxWidth: "92vw",
+          background: "var(--panel)",
+          border: "1px solid var(--border)",
+          borderRadius: 12,
+          padding: 16,
+          boxShadow: "var(--shadow)"
+        }}
+      >
         <h3 style={{ marginTop: 0 }}>Add New Task</h3>
 
+        {/* ================================================================= */}
+        {/*                          PRIMARY                                 */}
+        {/* ================================================================= */}
         <Field label="Primary">
           <input
             value={form.taskName}
-            onChange={(e) => setForm({ ...form, taskName: e.target.value })}
+            onChange={(e) => update({ taskName: e.target.value })}
+            onBlur={() => markTouched("taskName")}
+            placeholder="e.g., Implementation task 4"
           />
+          {touched.taskName && errors.taskName && (
+            <div className="error-text">{errors.taskName}</div>
+          )}
         </Field>
 
-        <Field label="Phase">
+        {/* ================================================================= */}
+        {/*                          PARENT ROW                              */}
+        {/* ================================================================= */}
+        <Field label="Parent">
           <select
-            value={form.phaseRowId}
-            onChange={(e) => setForm({ ...form, phaseRowId: e.target.value })}
+            value={form.parentRowId}
+            onChange={(e) => update({ parentRowId: e.target.value })}
+            onBlur={() => markTouched("parentRowId")}
           >
-            <option value="">Select phase…</option>
-            {phases.map((p) => (
-              <option key={String(p.id)} value={String(p.id)}>{p.name}</option>
+            <option value="">Select parent…</option>
+            {nodes.map((opt) => (
+              <ParentOption key={opt.id} opt={opt} />
             ))}
           </select>
+          {touched.parentRowId && errors.parentRowId && (
+            <div className="error-text">{errors.parentRowId}</div>
+          )}
         </Field>
 
+        {/* ================================================================= */}
+        {/*                        ASSIGNED TO                               */}
+        {/* ================================================================= */}
         <Field label="Assigned To">
           <ContactMultiSelect
             contacts={contacts}
             value={form.assignedTo}
-            onChange={(updated) => setForm({ ...form, assignedTo: updated })}
+            onChange={(updated) => update({ assignedTo: updated })}
           />
+          {touched.assignedTo && errors.assignedTo && (
+            <div className="error-text">{errors.assignedTo}</div>
+          )}
         </Field>
 
-        <div style={{ display: 'flex', gap: 10 }}>
+        {/* ================================================================= */}
+        {/*                            DATES                                  */}
+        {/* ================================================================= */}
+        <div style={{ display: "flex", gap: 10 }}>
           <Field label="Start Date" style={{ flex: 1 }}>
             <input
               type="date"
-              value={(form.start || '').slice(0,10)}
-              onChange={(e) => setForm({ ...form, start: e.target.value })}
+              value={form.start}
+              onChange={(e) =>
+                update({ start: e.target.value.slice(0, 10) })
+              }
+              onBlur={() => markTouched("start")}
             />
+            {touched.start && errors.start && (
+              <div className="error-text">{errors.start}</div>
+            )}
           </Field>
+
           <Field label="End Date" style={{ flex: 1 }}>
             <input
               type="date"
-              value={(form.end || '').slice(0,10)}
-              onChange={(e) => setForm({ ...form, end: e.target.value })}
+              value={form.end}
+              onChange={(e) =>
+                update({ end: e.target.value.slice(0, 10) })
+              }
+              onBlur={() => markTouched("end")}
             />
+            {touched.end && errors.end && (
+              <div className="error-text">{errors.end}</div>
+            )}
           </Field>
         </div>
 
+        {/* ================================================================= */}
+        {/*                        % COMPLETE                                 */}
+        {/* ================================================================= */}
         <Field label="% Complete">
           <input
             type="number"
             min={0}
             max={100}
             value={form.percent}
-            onChange={(e) => setForm({ ...form, percent: Number(e.target.value) })}
+            onChange={(e) => update({ percent: e.target.value })}
+            onBlur={() => markTouched("percent")}
+            placeholder="0 - 100"
           />
+          {touched.percent && errors.percent && (
+            <div className="error-text">{errors.percent}</div>
+          )}
         </Field>
 
-        <div style={{ marginTop: 12, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-          <button className="btn" onClick={onClose}>Cancel</button>
+        {/* ================================================================= */}
+        {/*                       FOOTER BUTTONS                              */}
+        {/* ================================================================= */}
+        <div
+          style={{
+            marginTop: 12,
+            display: "flex",
+            gap: 10,
+            justifyContent: "flex-end"
+          }}
+        >
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+
           <button
             className="btn btn-primary"
+            disabled={invalid}
             onClick={() => {
-              if (!form.phaseRowId) { alert('Select Phase'); return; }
-              if (!form.taskName.trim()) { alert('Primary name required'); return; }
-              onCreate(form);
+              const e = validate();
+              setErrors(e);
+              setTouched({
+                taskName: true,
+                parentRowId: true,
+                assignedTo: true,
+                start: true,
+                end: true,
+                percent: true
+              });
+              if (Object.keys(e).length > 0) return;
+
+              onCreate(form); // ✅ parent auto-expansion happens in onCreate()
             }}
           >
             Create
@@ -610,6 +762,20 @@ const rowsWithDepth = useMemo(() => {
   });
 }, [rows, ancestorsMap]);
 
+// --- Parent options for the "Add Task" modal: ANY node in the hierarchy ---
+const parentOptions = useMemo(() => {
+  // Sort by "visual order" (as already rendered in displayRows when not searching)
+  // but without search visibility filter. We’ll just use rowsWithDepth.
+  return rowsWithDepth.map(r => {
+    const label = cellVal(r, 'Primary') || '(unnamed)';
+    return {
+      id: String(r.id),
+      depth: r.depth || 0,
+      label
+    };
+  });
+}, [rowsWithDepth]);
+
   // Expanded set: which nodes are expanded. Start expanded for roots + all by default.
 
 // On first load, expand all nodes that have children
@@ -706,20 +872,28 @@ const displayRows = useMemo(() => {
 
   // ======================= CRUD =======================
   async function onCreate(form) {
+    // parent toggle: ensure the branch is visible immediately
+    const parentChain = (ancestorsMap.get(String(form.parentRowId)) || []).concat(String(form.parentRowId));
+    setExpanded(prev => {
+      const s = new Set(prev);
+      for (const id of parentChain) s.add(String(id));
+      return s;
+    });
+  
     await createTask({
-      parentId: String(form.phaseRowId),
+      parentId: String(form.parentRowId),
       cells: {
-        'Primary': form.taskName || form.primary || 'New Task',
+        'Primary': form.taskName.trim(),
         'Assigned To': form.assignedTo || [],
         'Start Date': form.start || '',
         'End Date': form.end || '',
-        '% Complete': Number(form.percent || 0)
+        '% Complete': Number(form.percent)
       }
     });
+  
     setShowAdd(false);
     await load();
   }
-
   // optimistic quick update
   async function onQuickUpdate(rowId, title, value) {
     // snapshot for revert
@@ -1177,7 +1351,7 @@ if (col.type === 'CHECKBOX') {
       {/* Add Task Modal */}
       {showAdd && (
         <AddModal
-          phases={phases}
+          nodes={parentOptions}
           contacts={contacts}
           onClose={() => setShowAdd(false)}
           onCreate={onCreate}

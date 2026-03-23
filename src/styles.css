@@ -420,3 +420,149 @@ select {
   font-size: 12px;
   line-height: 16px;
 }
+/* Form field errors */
+.error-text {
+  margin-top: 6px;
+  color: #b91c1c;           /* red-700 */
+  font-size: 12px;
+}
+
+input:invalid {
+  outline: none;
+}
+
+/* Optional: make invalid fields stand out */
+input.input-error, select.input-error {
+  border-color: #ef4444;    /* red-500 */
+}
+.page-enter {
+  opacity: 0;
+  transform: translateY(10px);
+}
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0px);
+  transition: opacity 400ms ease, transform 400ms ease;
+}
+.gantt-table tbody tr {
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.gantt-table tbody tr:hover {
+  background: #f7f9ff;
+  box-shadow: 0 2px 8px rgba(30, 41, 59, 0.08);
+  cursor: pointer;
+}
+.row-depth-1 td:first-child::before,
+.row-depth-2 td:first-child::before,
+.row-depth-3 td:first-child::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: -12px;
+  bottom: -12px;
+  width: 2px;
+  background: #e2e8f0;
+}
+.row-collapse {
+  max-height: 0;
+  opacity: 0;
+  transform: scaleY(0.95);
+  transition: all 300ms ease;
+}
+
+.row-expand {
+  max-height: 300px;
+  opacity: 1;
+  transform: scaleY(1);
+  transition: all 300ms ease;
+}
+.status-chip {
+  animation: fadeInChip 0.4s ease;
+}
+
+@keyframes fadeInChip {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.assignee-chip {
+  animation: slideIn 300ms ease;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.modal {
+  animation: modalPop 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modalPop {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0px);
+  }
+}
+
+
+/* Backdrop fade-in animation */
+.modal-backdrop {
+  animation: fadeBackdrop 0.3s ease forwards;
+}
+
+@keyframes fadeBackdrop {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.btn-primary {
+  transition: all 0.25s ease;
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(59,130,246,0.3);
+}
+.table-wrap {
+  border-radius: 12px;
+  box-shadow: 0 0 40px rgba(0,0,0,0.03);
+}
+
+.toolbar, .searchbar {
+  transition: box-shadow 0.3s ease;
+}
+
+.searchbar:hover {
+  box-shadow: 0 0 0 3px rgba(99,102,241,0.15);
+}
+
+/* Skeleton shimmer loading effect */
+.skeleton {
+  background: linear-gradient(90deg, #ececec, #f7f7f7, #ececec);
+  background-size: 200% 100%;
+  border-radius: 6px;
+  animation: shimmer 1.5s infinite;
+  min-height: 16px;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
