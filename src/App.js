@@ -60,26 +60,20 @@ const cellVal = (row, title) => (row?.cells?.[title]?.value ?? '');
 
 // ======================= Edit Policy (UI layer) =======================
 // Titles we never allow editing for (formula/system/locked known by name)
+// ONLY keep system counters as read-only; allow everything else in UI
 const READONLY_TITLES = new Set([
-  'Status','Health','Working Days Remaining',
-  'Children','Ancestors','Milestone','Modified','Modified By',
-  'Duration','Predecessors', // always read-only in this project plan
-  'MR','ATT' // locked CHECKBOX in your sheet
+  'Children','Ancestors','Modified','Modified By'
 ]);
 
-// Only these can be edited from the grid/dialogs
 const EDITABLE_TITLES = new Set([
-  'Primary','Start Date','End Date','% Complete','Assigned To'
+  // empty => allow everything except read-only
 ]);
 
 function canEdit(col, cell) {
   if (!col || READONLY_TITLES.has(col.title)) return false;
-  if (col.systemColumnType) return false;
-  if (cell && cell.formula) return false;
-  if (['PREDECESSOR','DURATION'].includes(col.type)) return false;
-  // Optional: respect column-level lock if meta has it
-  if (col.locked === true) return false;
-  return EDITABLE_TITLES.has(col.title);
+  if (col.systemColumnType) return false; // system
+  // allow all other types; even if backend rejects, we'll revert
+  return true;
 }
 
 // ======================= Contact Multi-select =======================
@@ -412,7 +406,6 @@ export default function App() {
 
   const [confirmState, setConfirmState] = useState({ open: false, row: null }); // delete confirm
   const searchRef = useRef(null);
-
   // keyboard shortcuts
   useEffect(() => {
     const handler = (e) => {
@@ -467,6 +460,81 @@ export default function App() {
 
   useEffect(() => { load(); }, []);
 
+  // --- Build hierarchy maps from rows ---
+// Map by id for quick parent walking
+const byId = useMemo(() => {
+  const m = new Map();
+  for (const r of rows) m.set(String(r.id), r);
+  return m;
+}, [rows]);
+
+// Children map: parentId -> array of child ids (direct children)
+const childrenMap = useMemo(() => {
+  const m = new Map();
+  for (const r of rows) {
+    if (r.parentId == null) continue;
+    const pid = String(r.parentId);
+    if (!m.has(pid)) m.set(pid, []);
+    m.get(pid).push(String(r.id));
+  }
+  return m;
+}, [rows]);
+
+// Ancestors chain for any row (ids only)
+const ancestorsMap = useMemo(() => {
+  const m = new Map();
+  for (const r of rows) {
+    const chain = [];
+    let cur = r;
+    while (cur && cur.parentId != null) {
+      chain.push(String(cur.parentId));
+      cur = byId.get(String(cur.parentId));
+    }
+    m.set(String(r.id), chain);
+  }
+  return m;
+}, [rows, byId]);
+
+// Depth (recompute if backend doesn't send it)
+const rowsWithDepth = useMemo(() => {
+  return rows.map(r => {
+    if (typeof r.depth === 'number') return r;
+    const d = (ancestorsMap.get(String(r.id)) || []).length;
+    return { ...r, depth: d, indent: d };
+  });
+}, [rows, ancestorsMap]);
+
+  // Expanded set: which nodes are expanded. Start expanded for roots + all by default.
+
+// On first load, expand all nodes that have children
+const [expanded, setExpanded] = useState(() => new Set());
+useEffect(() => {
+  const s = new Set();
+  for (const r of rowsWithDepth) {
+    const hasKids = (childrenMap.get(String(r.id)) || []).length > 0;
+    if (hasKids) s.add(String(r.id));
+  }
+  setExpanded(s);
+}, [rowsWithDepth, childrenMap]);
+
+function toggleExpand(rowId) {
+  setExpanded(prev => {
+    const s = new Set(prev);
+    if (s.has(String(rowId))) s.delete(String(rowId));
+    else s.add(String(rowId));
+    return s;
+  });
+}
+
+// A row is visible only if ALL its ancestors are expanded (roots always visible)
+function isVisible(rowId) {
+  const chain = ancestorsMap.get(String(rowId)) || [];
+  for (const ancId of chain) {
+    if (!expanded.has(String(ancId))) return false;
+  }
+  return true;
+}
+
   const columns = (meta && meta.columns) || [];
   const phases = (meta && meta.phases) || [];
 
@@ -487,24 +555,23 @@ export default function App() {
     });
   }
 
-  // children count map (for the "Children" column)
-  const childrenCount = useMemo(() => {
-    const map = new Map();
-    for (const r of rows) {
-      if (r.parentId) {
-        const key = String(r.parentId);
-        map.set(key, (map.get(key) || 0) + 1);
-      }
-    }
-    return map;
-  }, [rows]);
+  // Children count: direct children length from childrenMap
+const childrenCount = useMemo(() => {
+  const m = new Map();
+  for (const r of rowsWithDepth) {
+    const id = String(r.id);
+    m.set(id, (childrenMap.get(id) || []).length);
+  }
+  return m;
+}, [rowsWithDepth, childrenMap]);
 
-  // search filter
-  const displayRows = useMemo(() => {
-    if (!q.trim()) return rows;
+  // search filter -> then visibility filter (respect expand/collapse)
+const displayRows = useMemo(() => {
+  let base = rowsWithDepth;
+  if (q.trim()) {
     const term = q.trim().toLowerCase();
     const contains = (x) => String(x || '').toLowerCase().includes(term);
-    return rows.filter(r => {
+    base = rowsWithDepth.filter(r => {
       const name = cellValue(r, 'Primary');
       const status = cellValue(r, 'Status');
       const health = cellValue(r, 'Health');
@@ -513,7 +580,23 @@ export default function App() {
       const assignedStr = Array.isArray(assigned) ? assigned.join(',') : assigned;
       return contains(name) || contains(status) || contains(health) || contains(preds) || contains(assignedStr);
     });
-  }, [rows, q]);
+
+    // when searching, also force visibility of matched rows + their ancestors
+    const keepIds = new Set(base.map(r => String(r.id)));
+    // add ancestors of matched to keep set
+    for (const r of base) {
+      const chain = ancestorsMap.get(String(r.id)) || [];
+      for (const aid of chain) keepIds.add(aid);
+    }
+    base = rowsWithDepth.filter(r => keepIds.has(String(r.id)));
+  }
+
+  // If not searching, filter by expanded visibility
+  if (!q.trim()) {
+    base = base.filter(r => isVisible(String(r.id)));
+  }
+  return base;
+}, [rowsWithDepth, q, ancestorsMap, isVisible]);
 
   // ======================= CRUD =======================
   async function onCreate(form) {
@@ -533,6 +616,9 @@ export default function App() {
 
   // optimistic quick update
   async function onQuickUpdate(rowId, title, value) {
+    // snapshot for revert
+    const snapshot = rows;
+  
     // 1) Optimistic UI
     setRows(prev => prev.map(r => {
       if (String(r.id) !== String(rowId)) return r;
@@ -547,16 +633,20 @@ export default function App() {
       };
       return next;
     }));
-
-    // 2) Persist in background; reconcile after
+  
+    // 2) Persist; on error -> revert, show alert
     try {
       await updateTask(String(rowId), { [title]: value });
       const t = await getTasks();
       setRows((t.rows || []).map(r => ({ ...r, depth: (typeof r.depth === 'number' ? r.depth : (r.indent || 0)) })));
     } catch (e) {
-      console.error('Update failed, reloading:', e);
-      const t = await getTasks();
-      setRows((t.rows || []).map(r => ({ ...r, depth: (typeof r.depth === 'number' ? r.depth : (r.indent || 0)) })));
+      console.error('Update failed:', e);
+      alert(
+        typeof e?.message === 'string'
+          ? `Update failed: ${e.message}`
+          : 'Update failed: This column might be read-only (formula/locked).'
+      );
+      setRows(snapshot); // revert immediately
     }
   }
 
@@ -675,7 +765,7 @@ export default function App() {
 
                   // Children (compute for phases)
                   if (col.title === 'Children') {
-                    const c = row.parentId ? 0 : (childrenCount.get(String(row.id)) || 0);
+                    const c = childrenCount.get(String(row.id)) || 0;
                     return <td key={String(col.id)} className="cell-muted">{c}</td>;
                   }
 
@@ -815,20 +905,60 @@ export default function App() {
                     );
                   }
 
-                  // Primary (task name)
-                  if (col.title === 'Primary') {
-                    const val = String(cell.value ?? '');
-                    const editable = (!row.isPhase) && canEdit(col, cell);
-                    return (
-                      <td key={String(col.id)}>
-                        {editable
-                          ? <input value={val} onChange={(e) => onQuickUpdate(row.id, 'Primary', e.target.value)} />
-                          : <strong>{val}</strong>
-                        }
-                      </td>
-                    );
-                  }
+// Primary (task name) with indent and caret for expand/collapse
+if (col.title === 'Primary') {
+  const val = String(cell.value ?? '');
+  const idStr = String(row.id);
+  const hasKids = (childrenMap.get(idStr) || []).length > 0;
+  const isOpen = expanded.has(idStr);
 
+  return (
+    <td key={String(col.id)}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* indent spacer (16px per level) */}
+        <div style={{ width: (row.depth || 0) * 16 }} />
+        {hasKids ? (
+          <button
+            className="btn"
+            style={{ padding: '2px 6px', fontWeight: 700 }}
+            onClick={(e) => { e.stopPropagation(); toggleExpand(row.id); }}
+            title={isOpen ? 'Collapse' : 'Expand'}
+          >
+            {isOpen ? '−' : '+'}
+          </button>
+        ) : (
+          <span style={{ width: 18, display: 'inline-block' }} />
+        )}
+
+        {/* Allow editing here; if backend rejects, onQuickUpdate will revert */}
+        <input value={val} onChange={(e) => onQuickUpdate(row.id, 'Primary', e.target.value)} />
+      </div>
+    </td>
+  );
+}
+
+// if (col.title === 'Milestone') {
+//   let v = cell.value;
+//   if (!v) {
+//     // fallback: nearest ancestor's Primary
+//     const chain = ancestorsMap.get(String(row.id)) || [];
+//     if (chain.length > 0) {
+//       const parentRow = byId.get(chain[0]); // immediate parent
+//       v = cellVal(parentRow, 'Primary') || v;
+//     }
+//     if (!v && row.parentId == null) v = '—';
+//   }
+//   const editable = canEdit(col, cell); // if you now want Milestone editable in UI
+//   if (!editable) {
+//     return <td key={String(col.id)}><span>{v || '—'}</span></td>;
+//   }
+//   // editable: allow text edit (or select if you later provide options)
+//   return (
+//     <td key={String(col.id)}>
+//       <input value={v || ''} onChange={(e)=>onQuickUpdate(row.id, 'Milestone', e.target.value)} />
+//     </td>
+//     )
+//   }
                   // Default (respect editable)
                   const editable = canEdit(col, cell);
                   return (
