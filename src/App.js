@@ -1,14 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-// 👉 mock API for the demo UI; later switch to ./api.real
+// --- Real API for live integration ---
+import { getMeta, getTasks, createTask, updateTask, deleteTask } from './api.real';
+// Keep contacts only for labels/avatars (until you expose /api/contacts)
+import { getContacts } from './api.mock';
 
-import { getMeta, getTasks, createTask, updateTask, deleteTask } from "./api.real";
-import { getContacts } from "./api.mock"; // keep only for contact labels if you haven't added /api/contacts
-
-
-import ContactMultiSelect from './components/ContactMultiSelect';
-
-/* ======================= Theming (optional toggle) ======================= */
+// ======================= Theming (optional toggle) =======================
 function useTheme() {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light');
   const resolved =
@@ -24,7 +21,7 @@ function useTheme() {
   return { theme, setTheme, resolved, toggle: () => setTheme(resolved === 'dark' ? 'light' : 'dark') };
 }
 
-/* ======================= Render helpers ======================= */
+// ======================= Render helpers =======================
 const statusClass = (s) => {
   const v = (String(s || '').toLowerCase());
   if (v.includes('progress')) return 'status-progress';
@@ -61,7 +58,215 @@ function bizDaysFromToday(endValue) {
 
 const cellVal = (row, title) => (row?.cells?.[title]?.value ?? '');
 
-/* ======================= Small Field wrapper ======================= */
+// ======================= Edit Policy (UI layer) =======================
+// Titles we never allow editing for (formula/system/locked known by name)
+const READONLY_TITLES = new Set([
+  'Status','Health','Working Days Remaining',
+  'Children','Ancestors','Milestone','Modified','Modified By',
+  'Duration','Predecessors', // always read-only in this project plan
+  'MR','ATT' // locked CHECKBOX in your sheet
+]);
+
+// Only these can be edited from the grid/dialogs
+const EDITABLE_TITLES = new Set([
+  'Primary','Start Date','End Date','% Complete','Assigned To'
+]);
+
+function canEdit(col, cell) {
+  if (!col || READONLY_TITLES.has(col.title)) return false;
+  if (col.systemColumnType) return false;
+  if (cell && cell.formula) return false;
+  if (['PREDECESSOR','DURATION'].includes(col.type)) return false;
+  // Optional: respect column-level lock if meta has it
+  if (col.locked === true) return false;
+  return EDITABLE_TITLES.has(col.title);
+}
+
+// ======================= Contact Multi-select =======================
+function ContactMultiSelect({ contacts = [], value = [], onChange, placeholder = 'Select assignees…' }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [active, setActive] = useState(0);
+  const [sel, setSel] = useState(Array.isArray(value) ? value : (value ? [value] : []));
+
+  const boxRef = useRef(null);
+  const listRef = useRef(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    setSel(Array.isArray(value) ? value : (value ? [value] : []));
+  }, [value]);
+
+  useEffect(() => {
+    const onDown = (e) => {
+      if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    if (!term) return contacts;
+    return contacts.filter(c =>
+      c.name.toLowerCase().includes(term) ||
+      (c.email || '').toLowerCase().includes(term)
+    );
+  }, [q, contacts]);
+
+  useEffect(() => {
+    if (!open) return;
+    setActive(0);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }, [open]);
+
+  function toggle() {
+    setOpen(v => !v);
+  }
+
+  function toggleOne(email) {
+    setSel(prev => {
+      const next = prev.includes(email) ? prev.filter(v => v !== email) : [...prev, email];
+      onChange?.(next);
+      return next;
+    });
+  }
+
+  function onKeyDown(e) {
+    if (!open) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActive(i => Math.min(i + 1, filtered.length - 1));
+      scrollIntoView(active + 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActive(i => Math.max(i - 1, 0));
+      scrollIntoView(active - 1);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const pick = filtered[active];
+      if (pick) toggleOne(pick.email);
+    } else if (e.key === 'Escape') {
+      setOpen(false);
+    }
+  }
+
+  function scrollIntoView(idx) {
+    const container = listRef.current;
+    if (!container) return;
+    const item = container.querySelector(`[data-index="${idx}"]`);
+    if (item) {
+      const cTop = container.scrollTop;
+      const cBottom = cTop + container.clientHeight;
+      const iTop = item.offsetTop;
+      const iBottom = iTop + item.offsetHeight;
+      if (iBottom > cBottom) container.scrollTop = iBottom - container.clientHeight;
+      else if (iTop < cTop) container.scrollTop = iTop;
+    }
+  }
+
+  return (
+    <div className="cmulti" ref={boxRef} style={{ position: 'relative' }}>
+      {/* chips summary */}
+      <div className="cmulti__chips" onClick={toggle}>
+        {sel.length === 0 && <span style={{ color: 'var(--muted)' }}>{placeholder}</span>}
+        {sel.map(email => {
+          const c = contacts.find(x => x.email === email);
+          const initials = c
+            ? c.name.split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase()
+            : (email?.slice(0, 2) || '•').toUpperCase();
+          return (
+            <span key={email} className="cmulti__chip" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span style={{
+                width: 18, height: 18, borderRadius: '50%',
+                background: c?.color || '#888', color: '#fff',
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 10
+              }}>{initials}</span>
+              <span style={{ fontSize: 12 }}>{c ? c.name : email}</span>
+              <span
+                style={{ marginLeft: 4, cursor: 'pointer' }}
+                onClick={(e) => { e.stopPropagation(); toggleOne(email); }}
+              >✕</span>
+            </span>
+          );
+        })}
+        <span className="cmulti__caret" style={{ marginLeft: 'auto', opacity: .6 }}>▾</span>
+      </div>
+
+      {/* dropdown */}
+      {open && (
+        <div
+          className="cmulti__dropdown"
+          style={{
+            position: 'absolute',
+            marginTop: 6,
+            background: 'var(--panel)',
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+            padding: 8,
+            boxShadow: 'var(--shadow)'
+          }}
+          onKeyDown={onKeyDown}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <span style={{ opacity: .6 }}>🔎</span>
+            <input
+              ref={inputRef}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search people…"
+              style={{
+                width: '100%', border: '1px solid var(--border)', borderRadius: 8,
+                padding: '6px 8px', background: 'var(--chip)'
+              }}
+            />
+          </div>
+
+          <div ref={listRef} style={{ maxHeight: 300, overflowY: 'auto' }}>
+            {filtered.length === 0 && (
+              <div style={{ padding: 8, color: 'var(--muted)' }}>No matches</div>
+            )}
+            {filtered.map((c, idx) => {
+              const checked = sel.includes(c.email);
+              const initials = c.name.split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase();
+              return (
+                <div
+                  key={c.email}
+                  data-index={idx}
+                  onClick={() => toggleOne(c.email)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '6px 8px', borderRadius: 8, cursor: 'pointer',
+                    background: idx === active ? 'rgba(66,104,247,0.08)' : 'transparent'
+                  }}
+                  className="cmulti__option"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => { e.stopPropagation(); toggleOne(c.email); }}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                  <div style={{
+                    width: 24, height: 24, borderRadius: '50%',
+                    background: c.color, color: '#fff',
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11
+                  }}>{initials}</div>
+                  <div>
+                    <div>{c.name}</div>
+                    <div style={{ fontSize: 12, color: 'var(--muted)' }}>{c.email}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ======================= Small Field wrapper =======================
 function Field({ label, children, style }) {
   return (
     <div style={{ margin: '10px 0', ...style }}>
@@ -71,7 +276,7 @@ function Field({ label, children, style }) {
   );
 }
 
-/* ======================= Add Task Modal ======================= */
+// ======================= Add Task Modal =======================
 function AddModal({ phases, contacts, onClose, onCreate }) {
   const [form, setForm] = useState({
     taskName: '',
@@ -166,7 +371,7 @@ function AddModal({ phases, contacts, onClose, onCreate }) {
   );
 }
 
-/* ======================= Delete Confirmation Dialog ======================= */
+// ======================= Delete Confirmation =======================
 function ConfirmDialog({ open, title, message, confirmText = 'Delete', onCancel, onConfirm }) {
   if (!open) return null;
   return (
@@ -190,12 +395,12 @@ function ConfirmDialog({ open, title, message, confirmText = 'Delete', onCancel,
   );
 }
 
-/* ======================= App ======================= */
+// ======================= App =======================
 export default function App() {
   const { toggle } = useTheme();
 
   const [meta, setMeta] = useState(null);            // { sheetId, columns[], phases[] }
-  const [rows, setRows] = useState([]);              // flattened rows
+  const [rows, setRows] = useState([]);              // flattened rows (backend provides)
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -206,7 +411,6 @@ export default function App() {
   const [q, setQ] = useState('');                    // search
 
   const [confirmState, setConfirmState] = useState({ open: false, row: null }); // delete confirm
-
   const searchRef = useRef(null);
 
   // keyboard shortcuts
@@ -254,7 +458,8 @@ export default function App() {
     const m = await getMeta();
     setMeta(m);
     const t = await getTasks();
-    setRows(t.rows || []);
+    // If backend does not attach depth, we fallback to indent (0/1)
+    setRows((t.rows || []).map(r => ({ ...r, depth: (typeof r.depth === 'number' ? r.depth : (r.indent || 0)) })));
     const ppl = await getContacts();
     setContacts(ppl || []);
     setLoading(false);
@@ -262,7 +467,6 @@ export default function App() {
 
   useEffect(() => { load(); }, []);
 
-  // helpers
   const columns = (meta && meta.columns) || [];
   const phases = (meta && meta.phases) || [];
 
@@ -278,7 +482,7 @@ export default function App() {
         cellValue(row, 'Assigned To') ? [cellValue(row, 'Assigned To')] : []
       ),
       start: (cellValue(row, 'Start Date') || '').slice(0,10),
-      end: (cellValue(row, 'End Date') || '').slice(0,10),
+      end:   (cellValue(row, 'End Date')   || '').slice(0,10),
       percent: Number(cellValue(row, '% Complete') || 0)
     });
   }
@@ -311,7 +515,7 @@ export default function App() {
     });
   }, [rows, q]);
 
-  /* ======================= CRUD ======================= */
+  // ======================= CRUD =======================
   async function onCreate(form) {
     await createTask({
       parentId: String(form.phaseRowId),
@@ -320,18 +524,40 @@ export default function App() {
         'Assigned To': form.assignedTo || [],
         'Start Date': form.start || '',
         'End Date': form.end || '',
-        '% Complete': Number(form.percent || 0),
-        // 'Status': 'In Queue'
+        '% Complete': Number(form.percent || 0)
       }
     });
     setShowAdd(false);
     await load();
   }
 
+  // optimistic quick update
   async function onQuickUpdate(rowId, title, value) {
-    await updateTask(String(rowId), { [title]: value });
-    const t = await getTasks();
-    setRows(t.rows || []);
+    // 1) Optimistic UI
+    setRows(prev => prev.map(r => {
+      if (String(r.id) !== String(rowId)) return r;
+      const next = { ...r, cells: { ...r.cells } };
+      const v = (title === 'Assigned To')
+        ? (Array.isArray(value) ? value : (value ? [value] : []))
+        : value;
+      next.cells[title] = {
+        ...(r.cells[title] || { editable: true }),
+        value: v,
+        raw: v
+      };
+      return next;
+    }));
+
+    // 2) Persist in background; reconcile after
+    try {
+      await updateTask(String(rowId), { [title]: value });
+      const t = await getTasks();
+      setRows((t.rows || []).map(r => ({ ...r, depth: (typeof r.depth === 'number' ? r.depth : (r.indent || 0)) })));
+    } catch (e) {
+      console.error('Update failed, reloading:', e);
+      const t = await getTasks();
+      setRows((t.rows || []).map(r => ({ ...r, depth: (typeof r.depth === 'number' ? r.depth : (r.indent || 0)) })));
+    }
   }
 
   function requestDelete(rowId) {
@@ -357,11 +583,6 @@ export default function App() {
     await load();
   }
 
-  async function onDelete(rowId) {
-    // not used directly anymore; keyboard Delete calls requestDelete
-    requestDelete(rowId);
-  }
-
   async function onSaveEdit() {
     if (!editRow) return;
     await updateTask(String(editRow.id), {
@@ -379,11 +600,10 @@ export default function App() {
 
   return (
     <div className="container">
-
       {/* Header */}
       <div className="app-header" style={{ display: 'flex', justifyContent: 'space-between', padding: 14 }}>
         <div style={{ fontWeight: 700 }}>
-          {`PR‑123456 — Example Project Plan`}
+          {(meta?.sheetId ? `Sheet: ${meta.sheetId}` : 'Project Plan')}
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn" title="Toggle dark (d)" onClick={toggle}>☾/☀︎</button>
@@ -421,7 +641,7 @@ export default function App() {
             {displayRows.map((row) => (
               <tr
                 key={String(row.id)}
-                className={row.isPhase ? 'phase-row' : ''}
+                className={`row-depth-${Math.min(row.depth ?? row.indent ?? 0, 4)}`}
                 onClick={() => setSelected(String(row.id))}
                 style={{ cursor: 'pointer' }}
               >
@@ -431,7 +651,7 @@ export default function App() {
                 {columns.map((col) => {
                   const cell = (row.cells?.[col.title]) || { value: '', editable: false };
 
-                  // Health → circular dot
+                  // Health → circular dot + label (read-only)
                   if (col.title === 'Health') {
                     const h = cell.value || '';
                     return (
@@ -443,200 +663,286 @@ export default function App() {
                     );
                   }
 
-                  // Status → colored chip
-if (col.title === 'Status') {
-  const v = cell.value || 'In Queue';
-  return (
-    <td key={String(col.id)}>
-      <span className={`status-chip ${statusClass(v)}`}>{v}</span>
-    </td>
-  );
-}
+                  // Status → colored chip (read-only)
+                  if (col.title === 'Status') {
+                    const v = cell.value || 'In Queue';
+                    return (
+                      <td key={String(col.id)}>
+                        <span className={`status-chip ${statusClass(v)}`}>{v}</span>
+                      </td>
+                    );
+                  }
 
-// Children → compute for phases
-if (col.title === 'Children') {
-  const c = row.parentId ? 0 : (childrenCount.get(String(row.id)) || 0);
-  return <td key={String(col.id)} className="cell-muted">{c}</td>;
-}
+                  // Children (compute for phases)
+                  if (col.title === 'Children') {
+                    const c = row.parentId ? 0 : (childrenCount.get(String(row.id)) || 0);
+                    return <td key={String(col.id)} className="cell-muted">{c}</td>;
+                  }
 
-// Working Days Remaining → compute if empty
-if (col.title === 'Working Days Remaining') {
-  const raw = cell.value;
-  const fallback = bizDaysFromToday(cellVal(row, 'End Date'));
-  const shown = (raw !== '' && raw !== null && raw !== undefined) ? raw : (fallback || '—');
-  return <td key={String(col.id)} className={!shown || shown === '—' ? 'cell-muted' : ''}>{shown}</td>;
-}
+                  // Working Days Remaining → compute if empty
+                  if (col.title === 'Working Days Remaining') {
+                    const raw = cell.value;
+                    const fallback = bizDaysFromToday(cellVal(row, 'End Date'));
+                    const shown = (raw !== '' && raw !== null && raw !== undefined) ? raw : (fallback || '—');
+                    return <td key={String(col.id)} className={!shown || shown === '—' ? 'cell-muted' : ''}>{shown}</td>;
+                  }
 
-// Modified / Modified By
-if (col.title === 'Modified' || col.title === 'Modified By') {
-  const v = cell.value || '—';
-  return <td key={String(col.id)} className={!cell.value ? 'cell-muted' : ''}>{v}</td>;
-}
+                  // Modified / Modified By (system read-only)
+                  if (col.title === 'Modified' || col.title === 'Modified By') {
+                    const v = cell.value || '—';
+                    return <td key={String(col.id)} className={!cell.value ? 'cell-muted' : ''}>{v}</td>;
+                  }
 
-// Inline editors (tasks only)
-if (!row.isPhase && col.title === '% Complete') {
-  const val = Number(cell.value || 0);
-  return (
-    <td key={String(col.id)}>
-      <input
-        type="number"
-        min={0}
-        max={100}
-        value={val}
-        onChange={(e) => onQuickUpdate(row.id, '% Complete', Number(e.target.value))}
-      />
-    </td>
-  );
-}
+                  // CHECKBOX (MR/ATT read-only; others only if canEdit)
+                  if (col.type === 'CHECKBOX') {
+                    const checked = !!cell.value;
+                    const lockedByName = (col.title === 'MR' || col.title === 'ATT');
+                    const editable = canEdit(col, cell) && !lockedByName;
+                    return (
+                      <td key={String(col.id)}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={!editable}
+                          onChange={(e) => {
+                            if (!editable) return;
+                            onQuickUpdate(row.id, col.title, e.target.checked);
+                          }}
+                        />
+                      </td>
+                    );
+                  }
 
-if (!row.isPhase && (col.title === 'Start Date' || col.title === 'End Date')) {
-  const iso = String(cell.value || '');
-  return (
-    <td key={String(col.id)}>
-      <input
-        type="date"
-        value={iso ? iso.split('T')[0] : ''}
-        onChange={(e) => onQuickUpdate(row.id, col.title, e.target.value)}
-      />
-    </td>
-  );
-}
+                  // PICKLIST (read-only for formula picklists like Status handled above)
+                  if (col.type === 'PICKLIST' && Array.isArray(col.options)) {
+                    const editable = canEdit(col, cell);
+                    if (!editable) {
+                      const v = cell.value || '—';
+                      return (
+                        <td key={String(col.id)}>
+                          <span className="cell-muted">{v}</span>
+                        </td>
+                      );
+                    }
+                    // For future editable picklists (not Status/Health)
+                    const v = String(cell.value ?? '');
+                    return (
+                      <td key={String(col.id)}>
+                        <select value={v} onChange={e => onQuickUpdate(row.id, col.title, e.target.value)}>
+                          <option value="">Select…</option>
+                          {col.options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                        </select>
+                      </td>
+                    );
+                  }
 
-if (col.title === 'Assigned To') {
-  const selected = Array.isArray(cell.value) ? cell.value : (cell.value ? [cell.value] : []);
-  return (
-    <td key={String(col.id)} style={{ minWidth: 240 }}>
-      <ContactMultiSelect
-        contacts={contacts}
-        value={selected}
-        onChange={(updated) => onQuickUpdate(row.id, 'Assigned To', updated)}
-      />
-    </td>
-  );
-}
+                  // % Complete (0..100)
+                  if (!row.isPhase && col.title === '% Complete') {
+                    const val = Number(cell.value || 0);
+                    const editable = canEdit(col, cell);
+                    return (
+                      <td key={String(col.id)}>
+                        {editable
+                          ? <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              value={val}
+                              onChange={(e) => onQuickUpdate(row.id, '% Complete', Number(e.target.value))}
+                            />
+                          : <span className="cell-muted">{val}</span>
+                        }
+                      </td>
+                    );
+                  }
 
-if (col.title === 'Primary') {
-  const val = String(cell.value ?? '');
-  return (
-    <td key={String(col.id)}>
-      {row.isPhase
-        ? <strong>{val}</strong>
-        : <input value={val} onChange={(e) => onQuickUpdate(row.id, 'Primary', e.target.value)} />
-      }
-    </td>
-  );
-}
+                  // Dates (Start Date / End Date)
+                  if (!row.isPhase && (col.title === 'Start Date' || col.title === 'End Date')) {
+                    const iso = String(cell.value || '');
+                    const editable = canEdit(col, cell);
+                    return (
+                      <td key={String(col.id)}>
+                        {editable
+                          ? <input
+                              type="date"
+                              value={iso ? iso.slice(0,10) : ''}
+                              onChange={(e) => onQuickUpdate(row.id, col.title, e.target.value)}
+                            />
+                          : <span className={!cell.value ? 'cell-muted' : ''}>{iso ? iso.slice(0,10) : '—'}</span>
+                        }
+                      </td>
+                    );
+                  }
 
-// Default render (respect editable flag)
-return (
-  <td key={String(col.id)}>
-    {cell.editable
-      ? <input value={String(cell.value ?? '')} onChange={(e) => onQuickUpdate(row.id, col.title, e.target.value)} />
-      : <span className={!cell.value ? 'cell-muted' : ''}>{String(cell.value ?? '—') || '—'}</span>
-    }
-  </td>
-);
-})}
+                  // Assigned To
+                  if (col.title === 'Assigned To') {
+                    const raw = cell.value;
 
-<td style={{ whiteSpace: 'nowrap' }}>
-  {!row.isPhase && (
-    <>
-      <button className="btn" onClick={() => { setEditRow(row); seedEditForm(row); }}>Edit</button>
-      <button className="btn" style={{ marginLeft: 6 }} onClick={() => requestDelete(row.id)}>Delete</button>
-    </>
-  )}
-  {row.isPhase && <span className="cell-muted">—</span>}
-</td>
-</tr>
-))}
-</tbody>
-</table>
-</div>
+                    const toEmails = (val) => {
+                      if (!val) return [];
+                      if (Array.isArray(val)) {
+                        return val.map(v => {
+                          const c = contacts.find(x => x.email === v || x.name === v);
+                          return c?.email || v;
+                        });
+                      }
+                      return String(val)
+                        .split(',')
+                        .map(s => s.trim())
+                        .filter(Boolean)
+                        .map(v => {
+                          const c = contacts.find(x => x.email === v || x.name === v);
+                          return c?.email || v;
+                        });
+                    };
 
-{/* Add Task Modal */}
-{showAdd && (
-  <AddModal
-    phases={phases}
-    contacts={contacts}
-    onClose={() => setShowAdd(false)}
-    onCreate={onCreate}
-  />
-)}
+                    const selectedEmails = toEmails(raw);
+                    const editable = canEdit(col, cell);
 
-{/* Edit Drawer */}
-{editRow && (
-  <div className="drawer" style={{
-    position: 'fixed', right: 16, top: 16, bottom: 16, width: 380,
-    background: 'var(--panel)', border: '1px solid var(--border)',
-    borderRadius: 12, padding: 16, boxShadow: 'var(--shadow)', zIndex: 999
-  }}>
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-      <h3 style={{ margin: 0 }}>Edit Task</h3>
-      <button className="btn" onClick={() => setEditRow(null)}>×</button>
-    </div>
+                    return (
+                      <td key={String(col.id)} style={{ minWidth: 260 }}>
+                        {editable
+                          ? <ContactMultiSelect
+                              contacts={contacts}
+                              value={selectedEmails}
+                              onChange={(updated) => onQuickUpdate(row.id, 'Assigned To', updated)}
+                            />
+                          : <span className={!selectedEmails.length ? 'cell-muted' : ''}>
+                              {selectedEmails.join(', ') || '—'}
+                            </span>
+                        }
+                      </td>
+                    );
+                  }
 
-    <Field label="Primary">
-      <input
-        value={editForm.primary || ''}
-        onChange={(e) => setEditForm({ ...editForm, primary: e.target.value })}
-      />
-    </Field>
+                  // Primary (task name)
+                  if (col.title === 'Primary') {
+                    const val = String(cell.value ?? '');
+                    const editable = (!row.isPhase) && canEdit(col, cell);
+                    return (
+                      <td key={String(col.id)}>
+                        {editable
+                          ? <input value={val} onChange={(e) => onQuickUpdate(row.id, 'Primary', e.target.value)} />
+                          : <strong>{val}</strong>
+                        }
+                      </td>
+                    );
+                  }
 
-    <Field label="Assigned To">
-      <ContactMultiSelect
-        contacts={contacts}
-        value={editForm.assignedTo || []}
-        onChange={(updated) => setEditForm({ ...editForm, assignedTo: updated })}
-      />
-    </Field>
+                  // Default (respect editable)
+                  const editable = canEdit(col, cell);
+                  return (
+                    <td key={String(col.id)}>
+                      {editable
+                        ? <input
+                            value={String(cell.value ?? '')}
+                            onChange={(e) => onQuickUpdate(row.id, col.title, e.target.value)}
+                          />
+                        : <span className={!cell.value ? 'cell-muted' : ''}>{String(cell.value ?? '—') || '—'}</span>
+                      }
+                    </td>
+                  );
+                })}
 
-    <Field label="% Complete">
-      <input
-        type="number"
-        min={0}
-        max={100}
-        value={editForm.percent || 0}
-        onChange={(e) => setEditForm({ ...editForm, percent: Number(e.target.value) })}
-      />
-    </Field>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  {!row.isPhase && (
+                    <>
+                      <button className="btn" onClick={() => { setEditRow(row); seedEditForm(row); }}>Edit</button>
+                      <button className="btn" style={{ marginLeft: 6 }} onClick={() => requestDelete(row.id)}>Delete</button>
+                    </>
+                  )}
+                  {row.isPhase && <span className="cell-muted">—</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
-    <div style={{ display: 'flex', gap: 10 }}>
-      <Field label="Start Date" style={{ flex: 1 }}>
-        <input
-          type="date"
-          value={(editForm.start || '').split('T')[0] || ''}
-          onChange={(e) => setEditForm({ ...editForm, start: e.target.value })}
+      {/* Add Task Modal */}
+      {showAdd && (
+        <AddModal
+          phases={phases}
+          contacts={contacts}
+          onClose={() => setShowAdd(false)}
+          onCreate={onCreate}
         />
-      </Field>
-      <Field label="End Date" style={{ flex: 1 }}>
-        <input
-          type="date"
-          value={(editForm.end || '').split('T')[0] || ''}
-          onChange={(e) => setEditForm({ ...editForm, end: e.target.value })}
-        />
-      </Field>
-    </div>
+      )}
 
-    <div style={{ marginTop: 16, display: 'flex', gap: 10 }}>
-      <button className="btn" onClick={() => setEditRow(null)}>Cancel</button>
-      <button className="btn btn-primary" onClick={onSaveEdit}>Save</button>
-    </div>
-  </div>
-)}
+      {/* Edit Drawer */}
+      {editRow && (
+        <div className="drawer" style={{
+          position: 'fixed', right: 16, top: 16, bottom: 16, width: 380,
+          background: 'var(--panel)', border: '1px solid var(--border)',
+          borderRadius: 12, padding: 16, boxShadow: 'var(--shadow)', zIndex: 999
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3 style={{ margin: 0 }}>Edit Task</h3>
+            <button className="btn" onClick={() => setEditRow(null)}>×</button>
+          </div>
 
-{/* Delete Confirmation */}
-<ConfirmDialog
-  open={confirmState.open}
-  title="Delete Task"
-  message={
-    confirmState.row
-      ? `Are you sure you want to delete "${confirmState.row.name}"? This cannot be undone.`
-      : ''
-  }
-  confirmText="Delete"
-  onCancel={() => setConfirmState({ open: false, row: null })}
-  onConfirm={confirmDelete}
-/>
-</div>
-);
+          <Field label="Primary">
+            <input
+              value={editForm.primary || ''}
+              onChange={(e) => setEditForm({ ...editForm, primary: e.target.value })}
+            />
+          </Field>
+
+          <Field label="Assigned To">
+            <ContactMultiSelect
+              contacts={contacts}
+              value={editForm.assignedTo || []}
+              onChange={(updated) => setEditForm({ ...editForm, assignedTo: updated })}
+            />
+          </Field>
+
+          <Field label="% Complete">
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={editForm.percent || 0}
+              onChange={(e) => setEditForm({ ...editForm, percent: Number(e.target.value) })}
+            />
+          </Field>
+
+          <div style={{ display: 'flex', gap: 10 }}>
+            <Field label="Start Date" style={{ flex: 1 }}>
+              <input
+                type="date"
+                value={(editForm.start || '').slice(0,10)}
+                onChange={(e) => setEditForm({ ...editForm, start: e.target.value })}
+              />
+            </Field>
+            <Field label="End Date" style={{ flex: 1 }}>
+              <input
+                type="date"
+                value={(editForm.end || '').slice(0,10)}
+                onChange={(e) => setEditForm({ ...editForm, end: e.target.value })}
+              />
+            </Field>
+          </div>
+
+          <div style={{ marginTop: 16, display: 'flex', gap: 10 }}>
+            <button className="btn" onClick={() => setEditRow(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={onSaveEdit}>Save</button>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation */}
+      <ConfirmDialog
+        open={confirmState.open}
+        title="Delete Task"
+        message={
+          confirmState.row
+            ? `Are you sure you want to delete "${confirmState.row.name}"? This cannot be undone.`
+            : ''
+        }
+        confirmText="Delete"
+        onCancel={() => setConfirmState({ open: false, row: null })}
+        onConfirm={confirmDelete}
+      />
+    </div>
+  );
 }
