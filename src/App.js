@@ -389,6 +389,109 @@ function ConfirmDialog({ open, title, message, confirmText = 'Delete', onCancel,
   );
 }
 
+// --- Contact maps & helpers (normalize names -> emails) ---
+const normalizeKey = (s) => String(s || '').replace(/["']/g, '').trim().toLowerCase();
+
+function useContactMaps(contacts) {
+  return React.useMemo(() => {
+    const byEmail = new Map();
+    const byName  = new Map(); // key: normalized name (e.g., "allen mitchell, sales")
+    for (const c of contacts || []) {
+      byEmail.set((c.email || '').toLowerCase(), c);
+      byName.set(normalizeKey(c.name), c);
+    }
+    return { byEmail, byName };
+  }, [contacts]);
+}
+
+/**
+ * normalizeToEmails:
+ *   - If val is already array of emails -> return as-is
+ *   - If val is array of names -> map to emails using contacts
+ *   - If val is a single string:
+ *       - try exact name match (no split)
+ *       - if contains ';' (multi), split by ';'
+ *       - otherwise, if it contains ',' but full string matches a contact name -> it's one person (do not split)
+ */
+function normalizeToEmails(val, contactsBy) {
+  const { byEmail, byName } = contactsBy;
+  if (!val) return [];
+
+  const mapOne = (v) => {
+    const t = String(v || '').trim();
+    if (!t) return null;
+    if (t.includes('@')) return t; // email already
+    const byNameHit = byName.get(normalizeKey(t));
+    return byNameHit?.email || null;
+  };
+
+  if (Array.isArray(val)) {
+    const emails = [];
+    for (const v of val) {
+      if (!v) continue;
+      if (String(v).includes('@')) { emails.push(String(v)); continue; }
+      const hit = mapOne(v);
+      if (hit) emails.push(hit);
+    }
+    return emails;
+  }
+
+  // Single string
+  const raw = String(val).trim();
+  if (!raw) return [];
+
+  // 1) exact display name match (common case like "Allen Mitchell, Sales")
+  const hit = byName.get(normalizeKey(raw));
+  if (hit?.email) return [hit.email];
+
+  // 2) if multiple people are separated by ';'
+  if (raw.includes(';')) {
+    const parts = raw.split(';').map(s => s.trim()).filter(Boolean);
+    const emails = [];
+    for (const p of parts) {
+      const h = mapOne(p);
+      if (h) emails.push(h);
+    }
+    return emails;
+  }
+
+  // 3) fallback: if it looks like an email, accept; else treat as display name once (no comma split)
+  if (raw.includes('@')) return [raw];
+  const h = mapOne(raw);
+  return h ? [h] : [];
+}
+
+// Static, colored chips for read-only mode
+function AssigneeChips({ emails, contacts, mutedWhenEmpty=false }) {
+  if (!emails || emails.length === 0) {
+    return <span className={mutedWhenEmpty ? 'cell-muted' : ''}>—</span>;
+  }
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+      {emails.map(email => {
+        const c = (contacts || []).find(x => x.email === email);
+        const initials = c
+          ? c.name.split(' ').map(p => p[0]).join('').slice(0,2).toUpperCase()
+          : (email.slice(0,2).toUpperCase());
+        const bg = c?.color || '#4268f7';
+        return (
+          <span key={email} className="assignee-chip" style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '4px 8px', borderRadius: 999, border: '1px solid var(--border)',
+            background: 'var(--panel)'
+          }}>
+            <span style={{
+              width: 18, height: 18, borderRadius: '50%', background: bg, color: '#fff',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 10
+            }}>{initials}</span>
+            <span style={{ fontSize: 12 }}>{c ? c.name : email}</span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 // ======================= App =======================
 export default function App() {
   const { toggle } = useTheme();
@@ -459,6 +562,9 @@ export default function App() {
   }
 
   useEffect(() => { load(); }, []);
+
+// contact lookup maps
+const contactsBy = useContactMaps(contacts);
 
   // --- Build hierarchy maps from rows ---
 // Map by id for quick parent walking
@@ -728,264 +834,309 @@ const displayRows = useMemo(() => {
             </tr>
           </thead>
           <tbody>
-            {displayRows.map((row) => (
-              <tr
-                key={String(row.id)}
-                className={`row-depth-${Math.min(row.depth ?? row.indent ?? 0, 4)}`}
-                onClick={() => setSelected(String(row.id))}
-                style={{ cursor: 'pointer' }}
-              >
-                {/* hierarchy indicator */}
-                <td className="cell-indent">{row.indent ? '↳' : ''}</td>
+  {displayRows.map((row) => {
+    const isEditing = !!(editRow && String(editRow.id) === String(row.id));
 
-                {columns.map((col) => {
-                  const cell = (row.cells?.[col.title]) || { value: '', editable: false };
+    // local helpers to avoid NaN/stray text
+    const showText = (v, dash = '—') => {
+      if (v === null || v === undefined) return dash;
+      const s = String(v);
+      return s.trim() === '' ? dash : s;
+    };
+    const coercePercent = (val) => {
+      if (val === null || val === undefined) return '';
+      if (typeof val === 'number') return val <= 1 ? Math.round(val * 100) : Math.round(val);
+      const s = String(val).trim();
+      if (!s) return '';
+      if (s.endsWith('%')) {
+        const n = parseFloat(s.slice(0, -1));
+        return Number.isFinite(n) ? Math.round(n) : '';
+      }
+      const n = parseFloat(s);
+      if (!Number.isFinite(n)) return '';
+      return n <= 1 ? Math.round(n * 100) : Math.round(n);
+    };
 
-                  // Health → circular dot + label (read-only)
-                  if (col.title === 'Health') {
-                    const h = cell.value || '';
-                    return (
-                      <td key={String(col.id)}>
-                        <span className="health">
-                          <span className={`health-dot ${healthClass(h)}`}></span>
-                        </span>
-                      </td>
-                    );
-                  }
+    return (
+      <tr
+        key={String(row.id)}
+        className={`row-depth-${Math.min(row.depth ?? row.indent ?? 0, 4)}`}
+        onClick={() => setSelected(String(row.id))}
+        style={{ cursor: 'pointer' }}
+      >
+        {/* hierarchy indicator column (kept minimal; caret lives in Primary) */}
+        <td className="cell-indent">{row.depth ? '↳' : ''}</td>
 
-                  // Status → colored chip (read-only)
-                  if (col.title === 'Status') {
-                    const v = cell.value || 'In Queue';
-                    return (
-                      <td key={String(col.id)}>
-                        <span className={`status-chip ${statusClass(v)}`}>{v}</span>
-                      </td>
-                    );
-                  }
+        {columns.map((col) => {
+          const cell = (row.cells?.[col.title]) || { value: '', editable: false };
 
-                  // Children (compute for phases)
-                  if (col.title === 'Children') {
-                    const c = childrenCount.get(String(row.id)) || 0;
-                    return <td key={String(col.id)} className="cell-muted">{c}</td>;
-                  }
-
-                  // Working Days Remaining → compute if empty
-                  if (col.title === 'Working Days Remaining') {
-                    const raw = cell.value;
-                    const fallback = bizDaysFromToday(cellVal(row, 'End Date'));
-                    const shown = (raw !== '' && raw !== null && raw !== undefined) ? raw : (fallback || '—');
-                    return <td key={String(col.id)} className={!shown || shown === '—' ? 'cell-muted' : ''}>{shown}</td>;
-                  }
-
-                  // Modified / Modified By (system read-only)
-                  if (col.title === 'Modified' || col.title === 'Modified By') {
-                    const v = cell.value || '—';
-                    return <td key={String(col.id)} className={!cell.value ? 'cell-muted' : ''}>{v}</td>;
-                  }
-
-                  // CHECKBOX (MR/ATT read-only; others only if canEdit)
-                  if (col.type === 'CHECKBOX') {
-                    const checked = !!cell.value;
-                    const lockedByName = (col.title === 'MR' || col.title === 'ATT');
-                    const editable = canEdit(col, cell) && !lockedByName;
-                    return (
-                      <td key={String(col.id)}>
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={!editable}
-                          onChange={(e) => {
-                            if (!editable) return;
-                            onQuickUpdate(row.id, col.title, e.target.checked);
-                          }}
-                        />
-                      </td>
-                    );
-                  }
-
-                  // PICKLIST (read-only for formula picklists like Status handled above)
-                  if (col.type === 'PICKLIST' && Array.isArray(col.options)) {
-                    const editable = canEdit(col, cell);
-                    if (!editable) {
-                      const v = cell.value || '—';
-                      return (
-                        <td key={String(col.id)}>
-                          <span className="cell-muted">{v}</span>
-                        </td>
-                      );
-                    }
-                    // For future editable picklists (not Status/Health)
-                    const v = String(cell.value ?? '');
-                    return (
-                      <td key={String(col.id)}>
-                        <select value={v} onChange={e => onQuickUpdate(row.id, col.title, e.target.value)}>
-                          <option value="">Select…</option>
-                          {col.options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                        </select>
-                      </td>
-                    );
-                  }
-
-                  // % Complete (0..100)
-                  if (!row.isPhase && col.title === '% Complete') {
-                    const val = Number(cell.value || 0);
-                    const editable = canEdit(col, cell);
-                    return (
-                      <td key={String(col.id)}>
-                        {editable
-                          ? <input
-                              type="number"
-                              min={0}
-                              max={100}
-                              value={val}
-                              onChange={(e) => onQuickUpdate(row.id, '% Complete', Number(e.target.value))}
-                            />
-                          : <span className="cell-muted">{val}</span>
-                        }
-                      </td>
-                    );
-                  }
-
-                  // Dates (Start Date / End Date)
-                  if (!row.isPhase && (col.title === 'Start Date' || col.title === 'End Date')) {
-                    const iso = String(cell.value || '');
-                    const editable = canEdit(col, cell);
-                    return (
-                      <td key={String(col.id)}>
-                        {editable
-                          ? <input
-                              type="date"
-                              value={iso ? iso.slice(0,10) : ''}
-                              onChange={(e) => onQuickUpdate(row.id, col.title, e.target.value)}
-                            />
-                          : <span className={!cell.value ? 'cell-muted' : ''}>{iso ? iso.slice(0,10) : '—'}</span>
-                        }
-                      </td>
-                    );
-                  }
-
-                  // Assigned To
-                  if (col.title === 'Assigned To') {
-                    const raw = cell.value;
-
-                    const toEmails = (val) => {
-                      if (!val) return [];
-                      if (Array.isArray(val)) {
-                        return val.map(v => {
-                          const c = contacts.find(x => x.email === v || x.name === v);
-                          return c?.email || v;
-                        });
-                      }
-                      return String(val)
-                        .split(',')
-                        .map(s => s.trim())
-                        .filter(Boolean)
-                        .map(v => {
-                          const c = contacts.find(x => x.email === v || x.name === v);
-                          return c?.email || v;
-                        });
-                    };
-
-                    const selectedEmails = toEmails(raw);
-                    const editable = canEdit(col, cell);
-
-                    return (
-                      <td key={String(col.id)} style={{ minWidth: 260 }}>
-                        {editable
-                          ? <ContactMultiSelect
-                              contacts={contacts}
-                              value={selectedEmails}
-                              onChange={(updated) => onQuickUpdate(row.id, 'Assigned To', updated)}
-                            />
-                          : <span className={!selectedEmails.length ? 'cell-muted' : ''}>
-                              {selectedEmails.join(', ') || '—'}
-                            </span>
-                        }
-                      </td>
-                    );
-                  }
-
-// Primary (task name) with indent and caret for expand/collapse
-if (col.title === 'Primary') {
-  const val = String(cell.value ?? '');
-  const idStr = String(row.id);
-  const hasKids = (childrenMap.get(idStr) || []).length > 0;
-  const isOpen = expanded.has(idStr);
-
-  return (
-    <td key={String(col.id)}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        {/* indent spacer (16px per level) */}
-        <div style={{ width: (row.depth || 0) * 16 }} />
-        {hasKids ? (
-          <button
-            className="btn"
-            style={{ padding: '2px 6px', fontWeight: 700 }}
-            onClick={(e) => { e.stopPropagation(); toggleExpand(row.id); }}
-            title={isOpen ? 'Collapse' : 'Expand'}
-          >
-            {isOpen ? '−' : '+'}
-          </button>
-        ) : (
-          <span style={{ width: 18, display: 'inline-block' }} />
-        )}
-
-        {/* Allow editing here; if backend rejects, onQuickUpdate will revert */}
-        <input value={val} onChange={(e) => onQuickUpdate(row.id, 'Primary', e.target.value)} />
-      </div>
-    </td>
-  );
-}
-
-// if (col.title === 'Milestone') {
-//   let v = cell.value;
-//   if (!v) {
-//     // fallback: nearest ancestor's Primary
-//     const chain = ancestorsMap.get(String(row.id)) || [];
-//     if (chain.length > 0) {
-//       const parentRow = byId.get(chain[0]); // immediate parent
-//       v = cellVal(parentRow, 'Primary') || v;
-//     }
-//     if (!v && row.parentId == null) v = '—';
-//   }
-//   const editable = canEdit(col, cell); // if you now want Milestone editable in UI
-//   if (!editable) {
-//     return <td key={String(col.id)}><span>{v || '—'}</span></td>;
-//   }
-//   // editable: allow text edit (or select if you later provide options)
-//   return (
-//     <td key={String(col.id)}>
-//       <input value={v || ''} onChange={(e)=>onQuickUpdate(row.id, 'Milestone', e.target.value)} />
-//     </td>
-//     )
-//   }
-                  // Default (respect editable)
-                  const editable = canEdit(col, cell);
+          // ---- Assignees helpers (emails[] <-> chips) ----
+          const renderAssigneeChips = (emails) => {
+            const list = Array.isArray(emails) ? emails : [];
+            if (!list.length) return <span className="cell-muted">—</span>;
+            return (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {list.map(email => {
+                  const c = (contacts || []).find(x => x.email === email);
+                  const initials = c
+                    ? c.name.split(' ').map(p => p[0]).join('').slice(0,2).toUpperCase()
+                    : (email.slice(0,2).toUpperCase());
+                  const bg = c?.color || '#4268f7';
                   return (
-                    <td key={String(col.id)}>
-                      {editable
-                        ? <input
-                            value={String(cell.value ?? '')}
-                            onChange={(e) => onQuickUpdate(row.id, col.title, e.target.value)}
-                          />
-                        : <span className={!cell.value ? 'cell-muted' : ''}>{String(cell.value ?? '—') || '—'}</span>
-                      }
-                    </td>
+                    <span key={email} className="assignee-chip" style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                      padding: '4px 8px', borderRadius: 999, border: '1px solid var(--border)',
+                      background: 'var(--panel)'
+                    }}>
+                      <span style={{
+                        width: 18, height: 18, borderRadius: '50%', background: bg, color: '#fff',
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 10
+                      }}>{initials}</span>
+                      <span style={{ fontSize: 12 }}>{c ? c.name : email}</span>
+                    </span>
                   );
                 })}
+              </div>
+            );
+          };
+          const toEmails = (val) => {
+            const normKey = (s) => String(s || '').replace(/["']/g, '').trim().toLowerCase();
+            const byName = new Map((contacts || []).map(c => [normKey(c.name), c]));
+            const mapOne = (v) => {
+              const t = String(v || '').trim();
+              if (!t) return null;
+              if (t.includes('@')) return t;
+              const hit = byName.get(normKey(t));
+              return hit?.email || null;
+            };
+            if (!val) return [];
+            if (Array.isArray(val)) {
+              const out = [];
+              for (const v of val) {
+                if (!v) continue;
+                if (String(v).includes('@')) out.push(String(v));
+                else { const h = mapOne(v); if (h) out.push(h); }
+              }
+              return out;
+            }
+            const raw = String(val).trim();
+            if (!raw) return [];
+            // exact name (e.g., "Allen Mitchell, Sales")
+            const hit = byName.get(normKey(raw));
+            if (hit?.email) return [hit.email];
+            // multiple separated by ';'
+            if (raw.includes(';')) {
+              const out = [];
+              for (const part of raw.split(';').map(s => s.trim()).filter(Boolean)) {
+                const h = mapOne(part);
+                if (h) out.push(h);
+              }
+              return out;
+            }
+            if (raw.includes('@')) return [raw];
+            const h = mapOne(raw);
+            return h ? [h] : [];
+          };
+          // ------------------------------------------------
 
-                <td style={{ whiteSpace: 'nowrap' }}>
-                  {!row.isPhase && (
-                    <>
-                      <button className="btn" onClick={() => { setEditRow(row); seedEditForm(row); }}>Edit</button>
-                      <button className="btn" style={{ marginLeft: 6 }} onClick={() => requestDelete(row.id)}>Delete</button>
-                    </>
+          // Milestone: fallback to immediate parent's Primary if empty
+          if (col.title === 'Milestone') {
+            let v = cell.value;
+            if (!v) {
+              const pid = row.parentId != null ? String(row.parentId) : null;
+              if (pid) {
+                const parent = displayRows.find(r => String(r.id) === pid);
+                v = parent ? cellVal(parent, 'Primary') : v;
+              }
+              if (!v && row.parentId == null) v = '—';
+            }
+            return <td key={String(col.id)}><span>{showText(v)}</span></td>;
+          }
+
+          // Health (read-only chip unless editing)
+          if (col.title === 'Health') {
+            const h = String(cell.value || '');
+            return (
+              <td key={String(col.id)}>
+                {!isEditing
+                  ? <span className="health">
+                      <span className={`health-dot ${healthClass(h)}`}></span>
+                      {/* <span>{showText(h)}</span> */}
+                    </span>
+                  : <input value={h} onChange={(e)=>onQuickUpdate(row.id, 'Health', e.target.value)} />
+                }
+              </td>
+            );
+          }
+
+          // Status (read-only chip unless editing)
+          if (col.title === 'Status') {
+            const v = String(cell.value || '');
+            return (
+              <td key={String(col.id)}>
+                {!isEditing
+                  ? <span className={`status-chip ${statusClass(v)}`}>{showText(v)}</span>
+                  : <input value={v} onChange={(e)=>onQuickUpdate(row.id, 'Status', e.target.value)} />
+                }
+              </td>
+            );
+          }
+
+          // Children (direct children count)
+          if (col.title === 'Children') {
+            const c = childrenCount.get(String(row.id)) || 0;
+            return <td key={String(col.id)} className="cell-muted">{String(c)}</td>;
+          }
+
+          // Working Days Remaining → compute fallback if empty
+          if (col.title === 'Working Days Remaining') {
+            const raw = cell.value;
+            const fallback = bizDaysFromToday(cellVal(row, 'End Date'));
+            const shown = (raw !== '' && raw !== null && raw !== undefined) ? raw : (fallback || '—');
+            return <td key={String(col.id)} className={!shown || shown === '—' ? 'cell-muted' : ''}>{showText(shown)}</td>;
+          }
+
+          // Modified / Modified By (system)
+          if (col.title === 'Modified' || col.title === 'Modified By') {
+            return <td key={String(col.id)} className={!cell.value ? 'cell-muted' : ''}>{showText(cell.value)}</td>;
+          }
+
+          // CHECKBOX columns: editable only in edit mode
+          if (col.type === 'CHECKBOX') {
+            const checked = !!cell.value;
+            return (
+              <td key={String(col.id)}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={!isEditing}
+                  onChange={(e) => {
+                    if (!isEditing) return;
+                    onQuickUpdate(row.id, col.title, e.target.checked);
+                  }}
+                />
+                {!isEditing && <span className="cell-muted" style={{ marginLeft: 6 }}>read‑only</span>}
+              </td>
+            );
+          }
+
+          // % Complete (avoid NaN; show 0..100)
+          if (col.title === '% Complete') {
+            const pct = coercePercent(cell.value);
+            const shown = pct === '' ? '—' : String(pct);
+            return (
+              <td key={String(col.id)}>
+                {isEditing
+                  ? <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={pct === '' ? 0 : pct}
+                      onChange={(e) => {
+                        const v = e.target.value === '' ? '' : Number(e.target.value);
+                        onQuickUpdate(row.id, '% Complete', v);
+                      }}
+                    />
+                  : <span>{shown}</span>
+                }
+              </td>
+            );
+          }
+
+          // Dates (Start / End)
+          if (col.title === 'Start Date' || col.title === 'End Date') {
+            const iso = String(cell.value || '');
+            const shown = iso ? iso.slice(0,10) : '';
+            return (
+              <td key={String(col.id)}>
+                {isEditing
+                  ? <input
+                      type="date"
+                      value={shown}
+                      onChange={(e) => onQuickUpdate(row.id, col.title, e.target.value)}
+                    />
+                  : <span className={!shown ? 'cell-muted' : ''}>{showText(shown)}</span>
+                }
+              </td>
+            );
+          }
+
+          // Assigned To (chips in read mode; picker in edit mode)
+          if (col.title === 'Assigned To') {
+            const emails = toEmails(cell.value);
+            return (
+              <td key={String(col.id)} style={{ minWidth: 280 }}>
+                {isEditing ? (
+                  <ContactMultiSelect
+                    contacts={contacts}
+                    value={emails}
+                    onChange={(updated) => onQuickUpdate(row.id, 'Assigned To', updated)}
+                  />
+                ) : (
+                  renderAssigneeChips(emails)
+                )}
+              </td>
+            );
+          }
+
+          // Primary with indent + caret; edit only in edit mode
+          if (col.title === 'Primary') {
+            const val = String(cell.value ?? '');
+            const idStr = String(row.id);
+            const hasKids = (childrenMap.get(idStr) || []).length > 0;
+            const isOpen = expanded.has(idStr);
+
+            return (
+              <td key={String(col.id)}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: (row.depth || 0) * 16 }} />
+                  {hasKids ? (
+                    <button
+                      className="btn"
+                      style={{ padding: '2px 6px', fontWeight: 700 }}
+                      onClick={(e) => { e.stopPropagation(); toggleExpand(row.id); }}
+                      title={isOpen ? 'Collapse' : 'Expand'}
+                    >
+                      {isOpen ? '−' : '+'}
+                    </button>
+                  ) : (
+                    <span style={{ width: 18, display: 'inline-block' }} />
                   )}
-                  {row.isPhase && <span className="cell-muted">—</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
+                  {isEditing
+                    ? <input value={val} onChange={(e) => onQuickUpdate(row.id, 'Primary', e.target.value)} />
+                    : <strong>{showText(val)}</strong>
+                  }
+                </div>
+              </td>
+            );
+          }
+
+          // Default column: read-only text; editable only when isEditing
+          const val = String(cell.value ?? '');
+          return (
+            <td key={String(col.id)}>
+              {isEditing
+                ? <input value={val} onChange={(e) => onQuickUpdate(row.id, col.title, e.target.value)} />
+                : <span className={!val ? 'cell-muted' : ''}>{showText(val)}</span>
+              }
+            </td>
+          );
+        })}
+
+        {/* Actions */}
+        <td style={{ whiteSpace: 'nowrap' }}>
+          {!row.isPhase && (
+            <>
+              <button className="btn" onClick={() => { setEditRow(row); seedEditForm(row); }}>Edit</button>
+              <button className="btn" style={{ marginLeft: 6 }} onClick={() => requestDelete(row.id)}>Delete</button>
+            </>
+          )}
+          {row.isPhase && <span className="cell-muted">—</span>}
+        </td>
+      </tr>
+    );
+  })}
+</tbody>
         </table>
       </div>
 

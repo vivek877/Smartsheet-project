@@ -358,3 +358,9 @@ select {
   border-radius: 12px;
   padding: 2px 6px;
 }
+.assignee-chip {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 8px;
+}
