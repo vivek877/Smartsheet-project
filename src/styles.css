@@ -566,3 +566,6 @@ input.input-error, select.input-error {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+.td-center {
+  text-align: center;
+}

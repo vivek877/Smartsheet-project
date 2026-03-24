@@ -715,6 +715,11 @@ export default function App() {
 
   useEffect(() => { load(); }, []);
 
+  const DEPENDENCY_READONLY = new Set([
+    'End Date',       // cannot update
+    'Duration',       // cannot update
+    'Predecessors'    // cannot update
+  ]);
 // contact lookup maps
 const contactsBy = useContactMaps(contacts);
 
@@ -815,15 +820,47 @@ function isVisible(rowId) {
   }
 
   function seedEditForm(row) {
+    // Helper functions
+    const normalizeKey = (s) =>
+      String(s || "").replace(/["']/g, "").trim().toLowerCase();
+  
+    const byName = new Map(
+      (contacts || []).map((c) => [normalizeKey(c.name), c])
+    );
+  
+    // Normalize Assigned To (convert names -> emails[])
+    const normalizeAssignedTo = (raw) => {
+      if (!raw) return [];
+  
+      // Case 1: array
+      if (Array.isArray(raw)) {
+        return raw
+          .map((v) => {
+            const t = String(v || "").trim();
+  
+            if (t.includes("@")) return t; // already email
+  
+            const hit = byName.get(normalizeKey(t));
+            return hit?.email || null;
+          })
+          .filter(Boolean);
+      }
+  
+      // Case 2: single email
+      if (String(raw).includes("@")) return [raw];
+  
+      // Case 3: single display name like "Diana Foster, Project Manager"
+      const hit = byName.get(normalizeKey(raw));
+      return hit?.email ? [hit.email] : [];
+    };
+  
     setEditForm({
-      primary: cellValue(row, 'Primary'),
-      status: cellValue(row, 'Status'),
-      assignedTo: Array.isArray(cellValue(row, 'Assigned To')) ? cellValue(row, 'Assigned To') : (
-        cellValue(row, 'Assigned To') ? [cellValue(row, 'Assigned To')] : []
-      ),
-      start: (cellValue(row, 'Start Date') || '').slice(0,10),
-      end:   (cellValue(row, 'End Date')   || '').slice(0,10),
-      percent: Number(cellValue(row, '% Complete') || 0)
+      primary: cellValue(row, "Primary") || "",
+      status: cellValue(row, "Status") || "",
+      assignedTo: normalizeAssignedTo(cellValue(row, "Assigned To")),
+      start: (cellValue(row, "Start Date") || "").slice(0, 10),
+      end: (cellValue(row, "End Date") || "").slice(0, 10),
+      percent: Number(cellValue(row, "% Complete") || 0)
     });
   }
 
@@ -898,6 +935,14 @@ const displayRows = useMemo(() => {
   async function onQuickUpdate(rowId, title, value) {
     // snapshot for revert
     const snapshot = rows;
+
+    
+ // ❗ Skip updates for dependency columns
+ if (['End Date', 'Duration', 'Predecessors'].includes(title)) {
+   console.warn("Skipping update to dependency column:", title);
+   return;
+ }
+
   
     // 1) Optimistic UI
     setRows(prev => prev.map(r => {
@@ -916,7 +961,13 @@ const displayRows = useMemo(() => {
   
     // 2) Persist; on error -> revert, show alert
     try {
-      await updateTask(String(rowId), { [title]: value });
+      
+await updateTask(String(rowId), { 
+        ...(title === 'Assigned To'
+           ? { 'Assigned To': normalizeEmails(value) }
+           : { [title]: value })
+      });
+  
       const t = await getTasks();
       setRows((t.rows || []).map(r => ({ ...r, depth: (typeof r.depth === 'number' ? r.depth : (r.indent || 0)) })));
     } catch (e) {
@@ -955,13 +1006,42 @@ const displayRows = useMemo(() => {
 
   async function onSaveEdit() {
     if (!editRow) return;
-    await updateTask(String(editRow.id), {
-      'Primary': editForm.taskName || editForm.primary || cellValue(editRow, 'Primary'),
-      'Assigned To': editForm.assignedTo || [],
-      'Start Date': editForm.start || '',
-      'End Date': editForm.end || '',
-      '% Complete': Number(editForm.percent || 0)
-    });
+  
+    // ✅ normalize Assigned To to emails
+    const normalizeKey = (s) =>
+      String(s || "").replace(/["']/g, "").trim().toLowerCase();
+  
+    const byName = new Map(
+      (contacts || []).map((c) => [normalizeKey(c.name), c])
+    );
+  
+    const normalizeEmails = (arr) => {
+      if (!arr) return [];
+      return arr
+        .map((v) => {
+          const t = String(v || "").trim();
+          if (t.includes("@")) return t;
+          const hit = byName.get(normalizeKey(t));
+          return hit?.email || null;
+        })
+        .filter(Boolean);
+    };
+  
+    const assignedEmails = normalizeEmails(editForm.assignedTo);
+  
+    // ✅ SAFE PAYLOAD — NEVER SEND END DATE (dependency rule)
+    const payload = {
+      "Primary": editForm.primary,
+      "Assigned To": assignedEmails,
+      "Start Date": editForm.start || "",
+      "% Complete": Number(editForm.percent || 0),
+    };
+  
+    // ✅ END DATE REMOVED 100% (DO NOT SEND)
+    // payload["End Date"] = undefined   // DO NOT ADD THIS
+  
+    await updateTask(String(editRow.id), payload);
+  
     setEditRow(null);
     await load();
   }
@@ -1042,6 +1122,20 @@ const displayRows = useMemo(() => {
         <td className="cell-indent">{row.depth ? '↳' : ''}</td>
 
         {columns.map((col) => {
+          // ✅ Center certain columns (Health, Children, % Complete, etc.)
+          const CENTER_TITLES = new Set([
+            "Health",
+            "Status",
+            "Children",
+            "Ancestors",
+            "% Complete",
+            "Working Days Remaining",
+            "MR",
+            "ATT",
+          ]);
+
+          const isCenter = CENTER_TITLES.has(col.title);
+          const tdClass = isCenter ? "td-center" : "";
           const cell = (row.cells?.[col.title]) || { value: '', editable: false };
 
           // ---- Assignees helpers (emails[] <-> chips) ----
@@ -1251,23 +1345,40 @@ if (col.type === 'CHECKBOX') {
             );
           }
 
-          // Dates (Start / End)
-          if (col.title === 'Start Date' || col.title === 'End Date') {
-            const iso = String(cell.value || '');
-            const shown = iso ? iso.slice(0,10) : '';
-            return (
-              <td key={String(col.id)}>
-                {isEditing
-                  ? <input
-                      type="date"
-                      value={shown}
-                      onChange={(e) => onQuickUpdate(row.id, col.title, e.target.value)}
-                    />
-                  : <span className={!shown ? 'cell-muted' : ''}>{showText(shown)}</span>
-                }
-              </td>
-            );
-          }
+          //
+// START DATE — Editable
+//
+if (col.title === 'Start Date') {
+  const iso = String(cell.value || '');
+  const shown = iso ? iso.slice(0,10) : '';
+
+  return (
+    <td key={String(col.id)} className={tdClass}>
+      {isEditing
+        ? <input
+            type="date"
+            value={shown}
+            onChange={(e) => onQuickUpdate(row.id, 'Start Date', e.target.value)}
+          />
+        : <span className={!shown ? 'cell-muted' : ''}>{shown || '—'}</span>
+      }
+    </td>
+  );
+}
+
+//
+// END DATE — Read-only (Dependency Controlled)
+//
+if (col.title === 'End Date') {
+  const iso = String(cell.value || '');
+  const shown = iso ? iso.slice(0,10) : '';
+
+  return (
+    <td key={String(col.id)} className={tdClass}>
+      <span className={!shown ? 'cell-muted' : ''}>{shown || '—'}</span>
+    </td>
+  );
+}
 
           // Assigned To (chips in read mode; picker in edit mode)
           if (col.title === 'Assigned To') {
@@ -1407,7 +1518,7 @@ if (col.type === 'CHECKBOX') {
               <input
                 type="date"
                 value={(editForm.end || '').slice(0,10)}
-                onChange={(e) => setEditForm({ ...editForm, end: e.target.value })}
+                disabled
               />
             </Field>
           </div>
