@@ -819,6 +819,40 @@ function isVisible(rowId) {
     return (row?.cells?.[title]?.value ?? '');
   }
 
+   // Normalize Assigned To (convert names -> emails[])
+   function normalizeAssignedTo(val, contacts) {
+    if (!val) return [];
+  
+    const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+  
+    // Case 1: Array returned by API
+    if (Array.isArray(val)) {
+      return val.flatMap(v => normalizeAssignedTo(v, contacts));
+    }
+  
+    // Case 2: String
+    if (typeof val === "string") {
+      // ✅ Multiple contacts (emails)
+      const emails = val.match(emailRegex);
+      if (emails && emails.length > 0) {
+        return emails.map(email => ({
+          key: email,
+          label: email,
+        }));
+      }
+  
+      // ✅ Single contact with role: "Allen Mitchell, Sales"
+      const clean = val.replace(/^"|"$/g, "").trim();
+      return [{
+        key: clean,
+        label: clean,
+      }];
+    }
+  
+    return [];
+  }
+  
+
   function seedEditForm(row) {
     // Helper functions
     const normalizeKey = (s) =>
@@ -827,37 +861,11 @@ function isVisible(rowId) {
     const byName = new Map(
       (contacts || []).map((c) => [normalizeKey(c.name), c])
     );
-  
-    // Normalize Assigned To (convert names -> emails[])
-    const normalizeAssignedTo = (raw) => {
-      if (!raw) return [];
-  
-      // Case 1: array
-      if (Array.isArray(raw)) {
-        return raw
-          .map((v) => {
-            const t = String(v || "").trim();
-  
-            if (t.includes("@")) return t; // already email
-  
-            const hit = byName.get(normalizeKey(t));
-            return hit?.email || null;
-          })
-          .filter(Boolean);
-      }
-  
-      // Case 2: single email
-      if (String(raw).includes("@")) return [raw];
-  
-      // Case 3: single display name like "Diana Foster, Project Manager"
-      const hit = byName.get(normalizeKey(raw));
-      return hit?.email ? [hit.email] : [];
-    };
-  
+
     setEditForm({
       primary: cellValue(row, "Primary") || "",
       status: cellValue(row, "Status") || "",
-      assignedTo: normalizeAssignedTo(cellValue(row, "Assigned To")),
+      assignedTo: normalizeAssignedTo(cellValue(row, "Assigned To"),contacts),
       start: (cellValue(row, "Start Date") || "").slice(0, 10),
       end: (cellValue(row, "End Date") || "").slice(0, 10),
       percent: Number(cellValue(row, "% Complete") || 0)
@@ -964,7 +972,7 @@ const displayRows = useMemo(() => {
       
 await updateTask(String(rowId), { 
         ...(title === 'Assigned To'
-           ? { 'Assigned To': normalizeEmails(value) }
+           ? { 'Assigned To': normalizeAssignedTo(value,contacts) }
            : { [title]: value })
       });
   
@@ -1015,19 +1023,7 @@ await updateTask(String(rowId), {
       (contacts || []).map((c) => [normalizeKey(c.name), c])
     );
   
-    const normalizeEmails = (arr) => {
-      if (!arr) return [];
-      return arr
-        .map((v) => {
-          const t = String(v || "").trim();
-          if (t.includes("@")) return t;
-          const hit = byName.get(normalizeKey(t));
-          return hit?.email || null;
-        })
-        .filter(Boolean);
-    };
-  
-    const assignedEmails = normalizeEmails(editForm.assignedTo);
+    const assignedEmails = normalizeAssignedTo(editForm.assignedTo,contacts);
   
     // ✅ SAFE PAYLOAD — NEVER SEND END DATE (dependency rule)
     const payload = {
@@ -1140,71 +1136,39 @@ await updateTask(String(rowId), {
 
           // ---- Assignees helpers (emails[] <-> chips) ----
           const renderAssigneeChips = (emails) => {
-            const list = Array.isArray(emails) ? emails : [];
-            if (!list.length) return <span className="cell-muted">—</span>;
+            const assignees = normalizeAssignedTo(cell.value, contacts);
+
+            if (!assignees.length) {
+              return <span className="cell-muted">—</span>;
+            }
+            
             return (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {list.map(email => {
-                  const c = (contacts || []).find(x => x.email === email);
-                  const initials = c
-                    ? c.name.split(' ').map(p => p[0]).join('').slice(0,2).toUpperCase()
-                    : (email.slice(0,2).toUpperCase());
-                  const bg = c?.color || '#4268f7';
+              <div className="assignee-list">
+                {assignees.map(a => {
+                  const label = a.label;
+            
+                  const initials = label
+                    .split(' ')
+                    .map(p => p[0])
+                    .join('')
+                    .slice(0, 2)
+                    .toUpperCase();
+            
                   return (
-                    <span key={email} className="assignee-chip" style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 6,
-                      padding: '4px 8px', borderRadius: 999, border: '1px solid var(--border)',
-                      background: 'var(--panel)'
-                    }}>
-                      <span style={{
-                        width: 18, height: 18, borderRadius: '50%', background: bg, color: '#fff',
-                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 10
-                      }}>{initials}</span>
-                      <span style={{ fontSize: 12 }}>{c ? c.name : email}</span>
+                    <span key={a.key} className="assignee-chip">
+                      <span className="assignee-avatar">
+                        {initials}
+                      </span>
+                      <span className="assignee-text">
+                        {label}
+                      </span>
                     </span>
                   );
                 })}
               </div>
             );
-          };
-          const toEmails = (val) => {
-            const normKey = (s) => String(s || '').replace(/["']/g, '').trim().toLowerCase();
-            const byName = new Map((contacts || []).map(c => [normKey(c.name), c]));
-            const mapOne = (v) => {
-              const t = String(v || '').trim();
-              if (!t) return null;
-              if (t.includes('@')) return t;
-              const hit = byName.get(normKey(t));
-              return hit?.email || null;
-            };
-            if (!val) return [];
-            if (Array.isArray(val)) {
-              const out = [];
-              for (const v of val) {
-                if (!v) continue;
-                if (String(v).includes('@')) out.push(String(v));
-                else { const h = mapOne(v); if (h) out.push(h); }
-              }
-              return out;
-            }
-            const raw = String(val).trim();
-            if (!raw) return [];
-            // exact name (e.g., "Allen Mitchell, Sales")
-            const hit = byName.get(normKey(raw));
-            if (hit?.email) return [hit.email];
-            // multiple separated by ';'
-            if (raw.includes(';')) {
-              const out = [];
-              for (const part of raw.split(';').map(s => s.trim()).filter(Boolean)) {
-                const h = mapOne(part);
-                if (h) out.push(h);
-              }
-              return out;
-            }
-            if (raw.includes('@')) return [raw];
-            const h = mapOne(raw);
-            return h ? [h] : [];
-          };
+        };
+
           // ------------------------------------------------
 
           // Milestone: fallback to immediate parent's Primary if empty
@@ -1382,7 +1346,7 @@ if (col.title === 'End Date') {
 
           // Assigned To (chips in read mode; picker in edit mode)
           if (col.title === 'Assigned To') {
-            const emails = toEmails(cell.value);
+            const emails = normalizeAssignedTo(cell.value, contacts);
             return (
               <td key={String(col.id)} style={{ minWidth: 280 }}>
                 {isEditing ? (

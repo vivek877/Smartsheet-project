@@ -569,3 +569,37 @@ input.input-error, select.input-error {
 .td-center {
   text-align: center;
 }
+
+.assignee-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.assignee-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;           /* ✅ restores spacing */
+  padding: 6px 10px;
+  background: #fff;
+  border: 1px solid #e5eaf2;
+  border-radius: 999px;
+  font-size: 13px;
+}
+
+.assignee-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #3b82f6;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.assignee-text {
+  white-space: nowrap;
+}
