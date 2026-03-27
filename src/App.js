@@ -164,26 +164,81 @@ function ContactMultiSelect({ contacts = [], value = [], onChange, placeholder =
       {/* chips summary */}
       <div className="cmulti__chips" onClick={toggle}>
         {sel.length === 0 && <span style={{ color: 'var(--muted)' }}>{placeholder}</span>}
-        {sel.map(email => {
-          const c = contacts.find(x => x.email === email);
-          const initials = c
-            ? c.name.split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase()
-            : (email?.slice(0, 2) || '•').toUpperCase();
-          return (
-            <span key={email} className="cmulti__chip" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <span style={{
-                width: 18, height: 18, borderRadius: '50%',
-                background: c?.color || '#888', color: '#fff',
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 10
-              }}>{initials}</span>
-              <span style={{ fontSize: 12 }}>{c ? c.name : email}</span>
-              <span
-                style={{ marginLeft: 4, cursor: 'pointer' }}
-                onClick={(e) => { e.stopPropagation(); toggleOne(email); }}
-              >✕</span>
-            </span>
-          );
-        })}
+        {sel.map((value) => {
+  // ✅ Defensive: ContactMultiSelect must ONLY work with strings
+  // If anything else slips in, we safely fall back to empty string
+  const email = typeof value === "string" ? value : "";
+
+  // ✅ Compute initials safely
+  const initials = email
+    ? email.slice(0, 2).toUpperCase()
+    : "?";
+
+  // ✅ Try to resolve contact details
+  const c = contacts.find((x) => x.email === email);
+
+  return (
+    <span
+      key={email || Math.random()}
+      className="cmulti__chip"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "4px 8px",
+        borderRadius: 999,
+        border: "1px solid var(--border)",
+        background: "var(--panel)",
+      }}
+    >
+      {/* Avatar circle */}
+      <span
+        style={{
+          width: 18,
+          height: 18,
+          borderRadius: "50%",
+          background: c?.color || "#4268f7",
+          color: "#fff",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 10,
+          fontWeight: 600,
+          flexShrink: 0,
+        }}
+      >
+        {c
+          ? c.name
+              .split(" ")
+              .map((p) => p[0])
+              .join("")
+              .slice(0, 2)
+              .toUpperCase()
+          : initials}
+      </span>
+
+      {/* Label */}
+      <span style={{ fontSize: 12 }}>
+        {c ? c.name : email}
+      </span>
+
+      {/* Remove button */}
+      <span
+        style={{
+          marginLeft: 4,
+          cursor: "pointer",
+          opacity: 0.7,
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          toggleOne(email);
+        }}
+      >
+        ✕
+      </span>
+    </span>
+  );
+})}
         <span className="cmulti__caret" style={{ marginLeft: 'auto', opacity: .6 }}>▾</span>
       </div>
 
@@ -820,55 +875,66 @@ function isVisible(rowId) {
   }
 
    // Normalize Assigned To (convert names -> emails[])
-   function normalizeAssignedTo(val, contacts) {
+   function normalizeAssignedTo(val) {
     if (!val) return [];
   
-    const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-  
-    // Case 1: Array returned by API
+    // Case 1: Array
     if (Array.isArray(val)) {
-      return val.flatMap(v => normalizeAssignedTo(v, contacts));
+      return val.flatMap(v => normalizeAssignedTo(v));
     }
   
-    // Case 2: String
-    if (typeof val === "string") {
-      // ✅ Multiple contacts (emails)
-      const emails = val.match(emailRegex);
-      if (emails && emails.length > 0) {
-        return emails.map(email => ({
-          key: email,
-          label: email,
-        }));
-      }
+    if (typeof val !== "string") return [];
   
-      // ✅ Single contact with role: "Allen Mitchell, Sales"
-      const clean = val.replace(/^"|"$/g, "").trim();
-      return [{
-        key: clean,
-        label: clean,
-      }];
+    const clean = val.trim();
+  
+    // Case 2: Emails (best signal)
+    const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+    const emails = clean.match(emailRegex);
+    if (emails && emails.length) {
+      return emails.map(e => ({
+        key: e,
+        label: e,
+        type: "email"
+      }));
     }
   
-    return [];
+    // Case 3: quoted multiple names
+    const quoted = clean.match(/"([^"]+)"/g);
+    if (quoted && quoted.length) {
+      return quoted.map(q => {
+        const label = q.replace(/"/g, "").trim();
+        return { key: label, label, type: "display" };
+      });
+    }
+  
+    // Case 4: single display name
+    return [{
+      key: clean.replace(/^"|"$/g, ""),
+      label: clean.replace(/^"|"$/g, ""),
+      type: "display"
+    }];
   }
   
 
   function seedEditForm(row) {
-    // Helper functions
-    const normalizeKey = (s) =>
-      String(s || "").replace(/["']/g, "").trim().toLowerCase();
+    // ✅ Extract ONLY emails for the picker
+    const assignedEmails = normalizeAssignedTo(
+      cellVal(row, "Assigned To")
+    )
+      .filter(a => a.type === "email")
+      .map(a => a.label);
   
-    const byName = new Map(
-      (contacts || []).map((c) => [normalizeKey(c.name), c])
-    );
-
+    // ✅ % Complete: decimal (0–1) → UI percent (0–100)
+    const rawPercent = cellVal(row, "% Complete");
+    const percentUI =
+      rawPercent == null ? 0 : Math.round(Number(rawPercent) * 100);
+  
     setEditForm({
-      primary: cellValue(row, "Primary") || "",
-      status: cellValue(row, "Status") || "",
-      assignedTo: normalizeAssignedTo(cellValue(row, "Assigned To"),contacts),
-      start: (cellValue(row, "Start Date") || "").slice(0, 10),
-      end: (cellValue(row, "End Date") || "").slice(0, 10),
-      percent: Number(cellValue(row, "% Complete") || 0)
+      primary: cellVal(row, "Primary") || "",
+      assignedTo: assignedEmails,  // ✅ string[]
+      percent: percentUI,
+      start: (cellVal(row, "Start Date") || "").slice(0, 10),
+      end: (cellVal(row, "End Date") || "").slice(0, 10)
     });
   }
 
@@ -944,19 +1010,19 @@ const displayRows = useMemo(() => {
     // snapshot for revert
     const snapshot = rows;
 
-    
  // ❗ Skip updates for dependency columns
  if (['End Date', 'Duration', 'Predecessors'].includes(title)) {
    console.warn("Skipping update to dependency column:", title);
    return;
  }
 
-  
     // 1) Optimistic UI
     setRows(prev => prev.map(r => {
       if (String(r.id) !== String(rowId)) return r;
       const next = { ...r, cells: { ...r.cells } };
       const v = (title === 'Assigned To')
+      .filter(a => a.type === "email")
+      .map(a => a.label)
         ? (Array.isArray(value) ? value : (value ? [value] : []))
         : value;
       next.cells[title] = {
@@ -972,7 +1038,7 @@ const displayRows = useMemo(() => {
       
 await updateTask(String(rowId), { 
         ...(title === 'Assigned To'
-           ? { 'Assigned To': normalizeAssignedTo(value,contacts) }
+           ? { 'Assigned To': normalizeAssignedTo(value) }
            : { [title]: value })
       });
   
@@ -1023,7 +1089,11 @@ await updateTask(String(rowId), {
       (contacts || []).map((c) => [normalizeKey(c.name), c])
     );
   
-    const assignedEmails = normalizeAssignedTo(editForm.assignedTo,contacts);
+    const assignedEmails = 
+    normalizeAssignedTo(editForm.assignedTo)
+      .filter(a => a.type === "email")
+      .map(a => a.label);
+    
   
     // ✅ SAFE PAYLOAD — NEVER SEND END DATE (dependency rule)
     const payload = {
@@ -1136,37 +1206,32 @@ await updateTask(String(rowId), {
 
           // ---- Assignees helpers (emails[] <-> chips) ----
           const renderAssigneeChips = (emails) => {
-            const assignees = normalizeAssignedTo(cell.value, contacts);
+            const assignees = normalizeAssignedTo(cell.value);
 
-            if (!assignees.length) {
-              return <span className="cell-muted">—</span>;
-            }
-            
-            return (
-              <div className="assignee-list">
-                {assignees.map(a => {
-                  const label = a.label;
-            
-                  const initials = label
-                    .split(' ')
-                    .map(p => p[0])
-                    .join('')
-                    .slice(0, 2)
-                    .toUpperCase();
-            
-                  return (
-                    <span key={a.key} className="assignee-chip">
-                      <span className="assignee-avatar">
-                        {initials}
-                      </span>
-                      <span className="assignee-text">
-                        {label}
-                      </span>
-                    </span>
-                  );
-                })}
-              </div>
-            );
+if (!assignees.length) {
+  return <span className="cell-muted">—</span>;
+}
+
+return (
+  <div className="assignee-list">
+    {assignees.map(a => {
+      const label = a.label;
+      const initials = label
+        .split(" ")
+        .map(p => p[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase();
+
+      return (
+        <span key={a.key} className="assignee-chip">
+          <span className="assignee-avatar">{initials}</span>
+          <span className="assignee-text">{label}</span>
+        </span>
+      );
+    })}
+  </div>
+);
         };
 
           // ------------------------------------------------
@@ -1455,7 +1520,9 @@ if (col.title === 'End Date') {
           <Field label="Assigned To">
             <ContactMultiSelect
               contacts={contacts}
-              value={editForm.assignedTo || []}
+              value={Array.isArray(editForm.assignedTo)
+                  ? editForm.assignedTo.filter(v => typeof v === "string")
+                  : []}              
               onChange={(updated) => setEditForm({ ...editForm, assignedTo: updated })}
             />
           </Field>
